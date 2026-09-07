@@ -1,0 +1,54 @@
+[project]
+name = "twitchlink-next"
+version = "0.1.0"
+description = "TwitchLink Next — ground-up rewrite of TwitchLink with Twitch + Kick support"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.11",
+    "SQLAlchemy>=2.0",
+    "alembic>=1.13",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "qasync>=0.27",
+    "httpx>=0.27",
+    "keyring>=25.0",
+    "selenium>=4.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "pyright>=1.1",
+]
+
+[project.scripts]
+twitchlink-next = "twitchlink_next.main:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
+asyncio_mode = "auto"
