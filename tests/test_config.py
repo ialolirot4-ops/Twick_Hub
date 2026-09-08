@@ -1,9 +1,9 @@
-from twitchlink_next.config.settings import AppConfig
+from twick_hub.config.settings import AppConfig
 
 
 def test_defaults_are_safe_with_zero_configuration(tmp_path):
     config = AppConfig(data_dir=tmp_path)
-    assert config.app_name == "TwitchLink Next"
+    assert config.app_name == "Twick Hub"
     assert config.resolved_database_url().startswith("sqlite:///")
 
 

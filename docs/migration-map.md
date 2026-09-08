@@ -1,6 +1,6 @@
-# TwitchLink Next — Migration Map (FASE 0)
+# Twick Hub — Migration Map (FASE 0)
 
-Mapeo de TwitchLink 3.5.5 (fuente, 209 archivos `.py`) hacia TwitchLink Next. La clasificación se refiere al **estado en 3.5.5** — no existe código de Next aún (ver AD-01 en `architecture-decisions.md`). La columna "Destino" indica el tratamiento planeado, no una tarea completada.
+Mapeo de TwitchLink 3.5.5 (fuente, 209 archivos `.py`) hacia Twick Hub. La clasificación se refiere al **estado en 3.5.5** — no existe código de Next aún (ver AD-01 en `architecture-decisions.md`). La columna "Destino" indica el tratamiento planeado, no una tarea completada.
 
 ## Leyenda
 - **IMPLEMENTADO** — funciona en 3.5.5 tal como está

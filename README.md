@@ -1,4 +1,4 @@
-# TwitchLink Next — FASE 1 (Skeleton)
+# Twick Hub — FASE 1 (Skeleton)
 
 Skeleton mínimo: abre, cierra, inicializa dependencias por DI explícita
 (sin servicios globales), corre tests. Sin funcionalidad real de
@@ -18,7 +18,7 @@ python3 -m venv .venv
 ## Correr
 
 ```bash
-.venv/bin/python -m twitchlink_next.main
+.venv/bin/python -m twick_hub.main
 ```
 
 En un entorno sin display (CI, contenedores): `QT_QPA_PLATFORM=offscreen`.
@@ -48,7 +48,7 @@ que Alembic resuelve la configuración real de la app (`AppConfig`) y
 ## Estructura
 
 ```
-src/twitchlink_next/
+src/twick_hub/
 ├── main.py                    # entry point
 ├── bootstrap/                 # DI explícita — reemplaza App.Instance (AD-03)
 │   ├── container.py           # contenedor de dependencias (dataclass, no service locator)

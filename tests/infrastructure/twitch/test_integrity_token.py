@@ -1,6 +1,6 @@
 import time
 
-from twitchlink_next.infrastructure.twitch.integrity_adapter import IntegrityToken
+from twick_hub.infrastructure.twitch.integrity_adapter import IntegrityToken
 
 
 def test_integrity_token_is_valid_before_expiry():

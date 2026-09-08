@@ -12,9 +12,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 
-from twitchlink_next.bootstrap.container import Container
-from twitchlink_next.bootstrap.dependencies import build_container
-from twitchlink_next.config.settings import AppConfig
+from twick_hub.bootstrap.container import Container
+from twick_hub.bootstrap.dependencies import build_container
+from twick_hub.config.settings import AppConfig
 
 
 @pytest.fixture

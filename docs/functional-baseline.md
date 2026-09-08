@@ -1,4 +1,4 @@
-# TwitchLink Next — Functional Baseline (FASE 0)
+# Twick Hub — Functional Baseline (FASE 0)
 
 Checklist de compatibilidad funcional obligatoria (Master Plan §26 + §31), con estado observado en TwitchLink 3.5.5 y criterio de aceptación para Next. "Estado en 3.5.5" describe el código fuente auditado, no una re-certificación en vivo contra Twitch — eso está fuera del alcance de FASE 0, que no escribe ni ejecuta implementación nueva.
 

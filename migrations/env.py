@@ -3,8 +3,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from twitchlink_next.config.settings import load_config
-from twitchlink_next.infrastructure.persistence.base import Base
+from twick_hub.config.settings import load_config
+from twick_hub.infrastructure.persistence.base import Base
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -15,7 +15,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# TwitchLink Next: no models exist yet (FASE 8 adds them) — this wiring
+# Twick Hub: no models exist yet (FASE 8 adds them) — this wiring
 # only has to prove Alembic resolves our real config and metadata object
 # correctly, against an intentionally empty schema.
 target_metadata = Base.metadata

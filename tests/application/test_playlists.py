@@ -1,13 +1,13 @@
 import pytest
 
 from tests.application.fakes import InMemoryPlaylistRepository
-from twitchlink_next.application.playlists import (
+from twick_hub.application.playlists import (
     AddMediaToPlaylistUseCase,
     CreatePlaylistUseCase,
     PlaylistNotFoundError,
 )
-from twitchlink_next.domain.enums import MediaKind, Platform
-from twitchlink_next.domain.value_objects import Media, PlatformRef
+from twick_hub.domain.enums import MediaKind, Platform
+from twick_hub.domain.value_objects import Media, PlatformRef
 
 _MEDIA = Media(
     kind=MediaKind.CLIP, ref=PlatformRef(platform=Platform.KICK, external_id="c1"), title="A clip"

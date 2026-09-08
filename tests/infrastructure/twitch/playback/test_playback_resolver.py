@@ -3,17 +3,17 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from twitchlink_next.domain.enums import MediaKind, Platform
-from twitchlink_next.domain.identity import Channel, User
-from twitchlink_next.domain.protocols import PlaybackResolver
-from twitchlink_next.domain.value_objects import Media, PlatformRef
-from twitchlink_next.infrastructure.twitch.gql.client import TwitchGQLClient
-from twitchlink_next.infrastructure.twitch.playback.errors import (
+from twick_hub.domain.enums import MediaKind, Platform
+from twick_hub.domain.identity import Channel, User
+from twick_hub.domain.protocols import PlaybackResolver
+from twick_hub.domain.value_objects import Media, PlatformRef
+from twick_hub.infrastructure.twitch.gql.client import TwitchGQLClient
+from twick_hub.infrastructure.twitch.playback.errors import (
     ChannelOfflineError,
     GeoBlockedError,
     SubscriberOnlyRestrictedError,
 )
-from twitchlink_next.infrastructure.twitch.playback.playback_resolver import (
+from twick_hub.infrastructure.twitch.playback.playback_resolver import (
     NotAuthenticatedError,
     TwitchPlaybackResolver,
     _TwitchPlaybackError,

@@ -5,12 +5,12 @@ from tests.application.fakes import (
     InMemoryScheduledDownloadRepository,
     make_channel,
 )
-from twitchlink_next.application.scheduled_downloads import (
+from twick_hub.application.scheduled_downloads import (
     CancelScheduledDownloadUseCase,
     CreateScheduledDownloadUseCase,
 )
-from twitchlink_next.domain.enums import Platform, ScheduleTrigger
-from twitchlink_next.domain.value_objects import PlatformRef
+from twick_hub.domain.enums import Platform, ScheduleTrigger
+from twick_hub.domain.value_objects import PlatformRef
 
 
 @pytest.fixture

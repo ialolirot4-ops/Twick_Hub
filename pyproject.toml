@@ -1,7 +1,7 @@
 [project]
-name = "twitchlink-next"
+name = "twick-hub"
 version = "0.1.0"
-description = "TwitchLink Next — ground-up rewrite of TwitchLink with Twitch + Kick support"
+description = "Twick Hub — ground-up rewrite of TwitchLink with Twitch + Kick support"
 requires-python = ">=3.12"
 dependencies = [
     "PySide6>=6.11",
@@ -13,6 +13,7 @@ dependencies = [
     "httpx>=0.27",
     "keyring>=25.0",
     "selenium>=4.20",
+    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +26,7 @@ dev = [
 ]
 
 [project.scripts]
-twitchlink-next = "twitchlink_next.main:main"
+twick-hub = "twick_hub.main:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

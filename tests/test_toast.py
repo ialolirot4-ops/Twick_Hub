@@ -1,4 +1,4 @@
-from twitchlink_next.presentation.qml_bridge.toast import ToastController
+from twick_hub.presentation.qml_bridge.toast import ToastController
 
 
 def test_info_emits_with_info_kind(qapp):

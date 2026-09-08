@@ -3,13 +3,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from twitchlink_next.domain.enums import Platform
-from twitchlink_next.domain.identity import Channel, User
-from twitchlink_next.domain.protocols import VideoProvider
-from twitchlink_next.domain.value_objects import PlatformRef
-from twitchlink_next.infrastructure.twitch.gql.client import TwitchGQLClient
-from twitchlink_next.infrastructure.twitch.gql.errors import TwitchDataNotFoundError
-from twitchlink_next.infrastructure.twitch.video_provider import TwitchVideoProvider
+from twick_hub.domain.enums import Platform
+from twick_hub.domain.identity import Channel, User
+from twick_hub.domain.protocols import VideoProvider
+from twick_hub.domain.value_objects import PlatformRef
+from twick_hub.infrastructure.twitch.gql.client import TwitchGQLClient
+from twick_hub.infrastructure.twitch.gql.errors import TwitchDataNotFoundError
+from twick_hub.infrastructure.twitch.video_provider import TwitchVideoProvider
 
 from .gql.test_client import FakeIntegritySource
 

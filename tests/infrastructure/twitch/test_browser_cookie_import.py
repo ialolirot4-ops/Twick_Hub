@@ -4,9 +4,9 @@ import textwrap
 
 import pytest
 
-import twitchlink_next.infrastructure.twitch.browser_cookie_import as browser_cookie_import
-from twitchlink_next.infrastructure.twitch.browser_cookie_import import FirefoxCookieImporter
-from twitchlink_next.infrastructure.twitch.errors import NoBrowserSessionFoundError
+import twick_hub.infrastructure.twitch.browser_cookie_import as browser_cookie_import
+from twick_hub.infrastructure.twitch.browser_cookie_import import FirefoxCookieImporter
+from twick_hub.infrastructure.twitch.errors import NoBrowserSessionFoundError
 
 _SAMPLE_PROFILES_INI = textwrap.dedent(
     """

@@ -1,12 +1,12 @@
-from twitchlink_next.bootstrap.container import Container
-from twitchlink_next.bootstrap.dependencies import build_container
-from twitchlink_next.config.settings import AppConfig
+from twick_hub.bootstrap.container import Container
+from twick_hub.bootstrap.dependencies import build_container
+from twick_hub.config.settings import AppConfig
 
 
 def test_build_container_wires_everything(container: Container):
     assert container.engine is not None
     assert container.session_factory is not None
-    assert container.config.app_name == "TwitchLink Next"
+    assert container.config.app_name == "Twick Hub"
 
 
 def test_build_container_creates_independent_instances(tmp_path):

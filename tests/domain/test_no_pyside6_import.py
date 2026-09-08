@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_DOMAIN_DIR = Path(__file__).resolve().parents[2] / "src" / "twitchlink_next" / "domain"
+_DOMAIN_DIR = Path(__file__).resolve().parents[2] / "src" / "twick_hub" / "domain"
 _FORBIDDEN_IMPORT = re.compile(r"^\s*(import|from)\s+(PySide6|PyQt6|qasync)\b", re.MULTILINE)
 
 

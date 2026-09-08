@@ -1,7 +1,7 @@
 import pytest
 
-from twitchlink_next.domain.enums import Platform
-from twitchlink_next.domain.value_objects import Duration, FilenameTemplate, PlatformRef
+from twick_hub.domain.enums import Platform
+from twick_hub.domain.value_objects import Duration, FilenameTemplate, PlatformRef
 
 
 def test_platform_ref_rejects_empty_external_id():

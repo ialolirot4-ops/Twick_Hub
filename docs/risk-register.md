@@ -1,13 +1,13 @@
-# TwitchLink Next — Risk Register (FASE 0)
+# Twick Hub — Risk Register (FASE 0)
 
 Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 
 ## RISK-TWITCH-01 — Presupuesto de coste de EventSub limita favoritos monitoreables en tiempo real
-**Severidad:** CRITICAL
-**Evidencia:** `max_total_cost=10` por token de usuario; suscribirse a un canal ajeno cuesta 1 por tipo de suscripción → con 2-3 tipos por canal (`stream.online`, `stream.offline`, opcionalmente `channel.update`), el techo real es de ~3-5 canales monitoreados en tiempo real por token de usuario. Los tokens de aplicación sí tienen presupuesto de 10.000, pero la documentación consultada en esta sesión asocia ese presupuesto explícitamente al transporte Webhook — no confirma que el transporte WebSocket (el único viable sin backend propio) acepte tokens de aplicación.
-**Impacto:** Sin mitigación, TwitchLink Next tendría un límite de favoritos con notificación en tiempo real muy por debajo de lo que un usuario espera hoy.
-**Mitigación propuesta (a validar empíricamente en FASE 4d):** Ver AD-04. Respaldo: Helix `Get Streams` en polling de bajo coste (no consume presupuesto EventSub) para favoritos que excedan el presupuesto disponible.
-**Estado:** ABIERTO — máxima prioridad de investigación antes de comprometerse al diseño final de `TwitchEventSubProvider`.
+**Severidad:** HIGH (bajada de CRITICAL — ver Estado)
+**Evidencia:** `max_total_cost=10` por token de usuario; suscribirse a un canal ajeno cuesta 1 por tipo de suscripción → con 2 tipos por canal (`stream.online`, `stream.offline`), el techo real confirmado es de exactamente 5 canales monitoreados en tiempo real por token de usuario. FASE 4d confirmó (corrección a AD-04) que el transporte WebSocket exige token de usuario — los tokens de aplicación son el camino de Webhooks, no aplican acá.
+**Impacto:** Sin mitigación, Twick Hub tiene un límite de 5 favoritos con notificación en tiempo real vía EventSub — muy por debajo de lo que un usuario espera hoy.
+**Mitigación implementada:** `CapacityGovernor` (AD-23) aplica el límite explícitamente — nunca se excede en silencio. Respaldo pendiente de implementar (FASE 10): Helix `Get Streams` en polling de bajo coste (no consume presupuesto EventSub) para favoritos que excedan el presupuesto disponible.
+**Estado:** El límite en sí está CONFIRMADO y APLICADO (ya no es una hipótesis a investigar). Sigue ABIERTO lo que le corresponde a FASE 10: decidir y construir qué pasa con los favoritos que exceden las 5 plazas.
 
 ## RISK-TWITCH-02 — Server-Side Ad Insertion (SSAI) puede afectar la limpieza de las descargas
 **Severidad:** HIGH

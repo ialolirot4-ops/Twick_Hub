@@ -4,11 +4,11 @@ import httpx
 import pytest
 
 from tests.infrastructure.twitch.test_token_store import FakeKeyring
-from twitchlink_next.domain.protocols import AccountProvider
-from twitchlink_next.infrastructure.twitch.account_service import TwitchAccountService
-from twitchlink_next.infrastructure.twitch.browser_cookie_import import BrowserProfile
-from twitchlink_next.infrastructure.twitch.errors import NoBrowserSessionFoundError
-from twitchlink_next.infrastructure.twitch.token_store import TwitchTokenStore
+from twick_hub.domain.protocols import AccountProvider
+from twick_hub.infrastructure.twitch.account_service import TwitchAccountService
+from twick_hub.infrastructure.twitch.browser_cookie_import import BrowserProfile
+from twick_hub.infrastructure.twitch.errors import NoBrowserSessionFoundError
+from twick_hub.infrastructure.twitch.token_store import TwitchTokenStore
 
 
 class FakeCookieImporter:

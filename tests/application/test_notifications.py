@@ -1,10 +1,10 @@
 from tests.application.fakes import InMemoryNotificationRepository
-from twitchlink_next.application.notifications import (
+from twick_hub.application.notifications import (
     ListUnreadNotificationsUseCase,
     MarkNotificationReadUseCase,
 )
-from twitchlink_next.domain.enums import NotificationKind
-from twitchlink_next.domain.notifications import Notification
+from twick_hub.domain.enums import NotificationKind
+from twick_hub.domain.notifications import Notification
 
 
 async def test_list_unread_excludes_read_notifications():

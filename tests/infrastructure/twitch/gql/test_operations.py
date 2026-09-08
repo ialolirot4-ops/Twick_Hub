@@ -1,4 +1,4 @@
-from twitchlink_next.infrastructure.twitch.gql.operations import GET_CHANNEL, GET_VIDEO
+from twick_hub.infrastructure.twitch.gql.operations import GET_CHANNEL, GET_VIDEO
 
 
 def test_build_payload_includes_only_declared_variables():

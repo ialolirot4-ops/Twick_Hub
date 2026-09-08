@@ -1,6 +1,6 @@
 import json
 
-from twitchlink_next.infrastructure.twitch.playback.models import PlaybackToken, stream_hides_ads
+from twick_hub.infrastructure.twitch.playback.models import PlaybackToken, stream_hides_ads
 
 
 def _token(payload: dict) -> PlaybackToken:

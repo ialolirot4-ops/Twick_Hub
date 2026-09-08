@@ -1,13 +1,13 @@
 import pytest
 
 from tests.application.fakes import FakeChannelDirectory, InMemoryFavoriteRepository, make_channel
-from twitchlink_next.application.favorites import (
+from twick_hub.application.favorites import (
     AddFavoriteUseCase,
     ListFavoritesUseCase,
     RemoveFavoriteUseCase,
 )
-from twitchlink_next.domain.enums import Platform
-from twitchlink_next.domain.value_objects import PlatformRef
+from twick_hub.domain.enums import Platform
+from twick_hub.domain.value_objects import PlatformRef
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 import pytest
 
-from twitchlink_next.infrastructure.twitch.errors import SecureStorageUnavailableError
-from twitchlink_next.infrastructure.twitch.token_store import TwitchTokenStore
+from twick_hub.infrastructure.twitch.errors import SecureStorageUnavailableError
+from twick_hub.infrastructure.twitch.token_store import TwitchTokenStore
 
 
 class FakeKeyring:

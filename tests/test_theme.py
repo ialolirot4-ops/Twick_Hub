@@ -1,4 +1,4 @@
-from twitchlink_next.presentation.qml_bridge.theme import Theme
+from twick_hub.presentation.qml_bridge.theme import Theme
 
 
 def test_starts_in_dark_mode(qapp):

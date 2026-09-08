@@ -15,9 +15,9 @@ import pytest
 from PySide6.QtCore import QUrl
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent, qmlTypeId
 
-import twitchlink_next.presentation.qml_bridge  # noqa: F401  (registers QML singletons)
+import twick_hub.presentation.qml_bridge  # noqa: F401  (registers QML singletons)
 
-_QML_DIR = Path(__file__).resolve().parents[1] / "src" / "twitchlink_next" / "presentation" / "qml"
+_QML_DIR = Path(__file__).resolve().parents[1] / "src" / "twick_hub" / "presentation" / "qml"
 
 _PAGE_FILES = [
     "HomePage.qml",
@@ -88,7 +88,7 @@ def test_navigating_through_every_page_produces_no_warnings(engine_with_warnings
     engine.load(QUrl.fromLocalFile(str(_QML_DIR / "AppShell.qml")))
     assert len(engine.rootObjects()) == 1
 
-    type_id = _qml_type_id("TwitchLinkNext", 1, 0, "NavigationController")
+    type_id = _qml_type_id("TwickHub", 1, 0, "NavigationController")
     nav = engine.singletonInstance(type_id)
     assert nav is not None
 
@@ -104,8 +104,8 @@ def test_theme_toggle_and_toast_produce_no_warnings(engine_with_warnings):
     engine.load(QUrl.fromLocalFile(str(_QML_DIR / "AppShell.qml")))
     assert len(engine.rootObjects()) == 1
 
-    theme = engine.singletonInstance(_qml_type_id("TwitchLinkNext", 1, 0, "Theme"))
-    toasts = engine.singletonInstance(_qml_type_id("TwitchLinkNext", 1, 0, "ToastController"))
+    theme = engine.singletonInstance(_qml_type_id("TwickHub", 1, 0, "Theme"))
+    toasts = engine.singletonInstance(_qml_type_id("TwickHub", 1, 0, "ToastController"))
     assert theme is not None
     assert toasts is not None
 

@@ -3,12 +3,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from twitchlink_next.infrastructure.twitch.gql.client import TwitchGQLClient
-from twitchlink_next.infrastructure.twitch.gql.errors import (
+from twick_hub.infrastructure.twitch.gql.client import TwitchGQLClient
+from twick_hub.infrastructure.twitch.gql.errors import (
     TwitchGQLRequestError,
     TwitchIntegrityCheckFailedError,
 )
-from twitchlink_next.infrastructure.twitch.gql.operations import GET_CHANNEL, GET_CHANNEL_VIDEOS
+from twick_hub.infrastructure.twitch.gql.operations import GET_CHANNEL, GET_CHANNEL_VIDEOS
 
 
 class FakeIntegritySource:

@@ -2,10 +2,10 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from twitchlink_next.domain.collections import Playlist
-from twitchlink_next.domain.downloads import Download, DownloadJob
-from twitchlink_next.domain.enums import MediaKind, Platform
-from twitchlink_next.domain.value_objects import Media, PlatformRef
+from twick_hub.domain.collections import Playlist
+from twick_hub.domain.downloads import Download, DownloadJob
+from twick_hub.domain.enums import MediaKind, Platform
+from twick_hub.domain.value_objects import Media, PlatformRef
 
 _MEDIA = Media(
     kind=MediaKind.VIDEO,

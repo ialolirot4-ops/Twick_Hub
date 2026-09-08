@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import QTimer
 
-from twitchlink_next.bootstrap.application import Application
-from twitchlink_next.bootstrap.container import Container
+from twick_hub.bootstrap.application import Application
+from twick_hub.bootstrap.container import Container
 
 # `qapp` comes from pytest-qt: one QGuiApplication for the whole test
 # session. Qt allows exactly one per process, so Application takes it as
@@ -32,7 +32,7 @@ def test_application_opens_and_closes_cleanly(container: Container, qapp):
 
 
 def test_application_reports_failure_if_qml_is_missing(container: Container, qapp, monkeypatch):
-    import twitchlink_next.bootstrap.application as application_module
+    import twick_hub.bootstrap.application as application_module
 
     monkeypatch.setattr(
         application_module, "_QML_MAIN", application_module._QML_MAIN.parent / "DoesNotExist.qml"

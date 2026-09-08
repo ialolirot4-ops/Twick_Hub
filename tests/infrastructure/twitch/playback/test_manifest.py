@@ -1,4 +1,4 @@
-from twitchlink_next.infrastructure.twitch.playback.manifest import parse_variant_playlist
+from twick_hub.infrastructure.twitch.playback.manifest import parse_variant_playlist
 
 _SAMPLE_PLAYLIST = """
 #EXTM3U

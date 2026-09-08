@@ -1,6 +1,6 @@
 from tests.application.fakes import FakeChannelDirectory, make_channel
-from twitchlink_next.application.search import SearchContentUseCase
-from twitchlink_next.domain.enums import Platform
+from twick_hub.application.search import SearchContentUseCase
+from twick_hub.domain.enums import Platform
 
 
 def _use_case() -> SearchContentUseCase:

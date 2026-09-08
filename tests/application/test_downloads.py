@@ -5,13 +5,13 @@ from tests.application.fakes import (
     FakePlaybackResolver,
     InMemoryDownloadRepository,
 )
-from twitchlink_next.application.downloads import (
+from twick_hub.application.downloads import (
     CancelDownloadUseCase,
     EnqueueDownloadUseCase,
     QualityNotAvailableError,
 )
-from twitchlink_next.domain.enums import DownloadStatus, MediaKind, Platform
-from twitchlink_next.domain.value_objects import Media, PlatformRef
+from twick_hub.domain.enums import DownloadStatus, MediaKind, Platform
+from twick_hub.domain.value_objects import Media, PlatformRef
 
 _MEDIA = Media(
     kind=MediaKind.VIDEO, ref=PlatformRef(platform=Platform.TWITCH, external_id="v1"), title="A VOD"

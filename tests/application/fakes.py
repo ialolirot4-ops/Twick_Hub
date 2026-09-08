@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from twitchlink_next.domain.collections import Favorite, Playlist, ScheduledDownload
-from twitchlink_next.domain.downloads import Download, DownloadJob
-from twitchlink_next.domain.identity import Channel, User
-from twitchlink_next.domain.notifications import Notification
-from twitchlink_next.domain.value_objects import Media, PlatformRef, PlaybackSource
+from twick_hub.domain.collections import Favorite, Playlist, ScheduledDownload
+from twick_hub.domain.downloads import Download, DownloadJob
+from twick_hub.domain.identity import Channel, User
+from twick_hub.domain.notifications import Notification
+from twick_hub.domain.value_objects import Media, PlatformRef, PlaybackSource
 
 
 @dataclass

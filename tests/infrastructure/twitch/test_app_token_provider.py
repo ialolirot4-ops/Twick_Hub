@@ -3,9 +3,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from twitchlink_next.infrastructure.twitch.app_token_provider import AppTokenProvider
-from twitchlink_next.infrastructure.twitch.config import TwitchAppCredentials
-from twitchlink_next.infrastructure.twitch.errors import (
+from twick_hub.infrastructure.twitch.app_token_provider import AppTokenProvider
+from twick_hub.infrastructure.twitch.config import TwitchAppCredentials
+from twick_hub.infrastructure.twitch.errors import (
     TokenRefreshFailedError,
     TokenRevokeFailedError,
 )

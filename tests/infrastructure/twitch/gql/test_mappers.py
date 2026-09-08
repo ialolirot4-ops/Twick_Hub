@@ -1,6 +1,6 @@
-from twitchlink_next.domain.enums import Platform
-from twitchlink_next.domain.value_objects import PlatformRef
-from twitchlink_next.infrastructure.twitch.gql.mappers import (
+from twick_hub.domain.enums import Platform
+from twick_hub.domain.value_objects import PlatformRef
+from twick_hub.infrastructure.twitch.gql.mappers import (
     map_channel,
     map_clip,
     map_stream,

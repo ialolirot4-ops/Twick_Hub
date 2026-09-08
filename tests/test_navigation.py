@@ -1,6 +1,6 @@
 from typing import cast
 
-from twitchlink_next.presentation.qml_bridge.navigation import NavigationController
+from twick_hub.presentation.qml_bridge.navigation import NavigationController
 
 
 def test_starts_on_home(qapp):

@@ -1,11 +1,11 @@
-# TwitchLink Next — Architecture Decisions (FASE 0)
+# Twick Hub — Architecture Decisions (FASE 0)
 
 **Estado:** Congelado en FASE 0 · **Basado en:** Master Plan v3.0 + auditoría de TwitchLink 3.5.5 (repo original devhotteok/TwitchLink, subido como referencia)
 
 Formato ADR ligero: contexto → decisión → consecuencias. Estas decisiones son vinculantes para las fases siguientes salvo que una fase futura las revise explícitamente y lo documente aquí (Master Plan §32).
 
-## AD-01 — Punto de partida: repo vacío, sin código heredado de TwitchLink Next
-**Contexto:** No existe ningún repositorio parcial de TwitchLink Next. Solo se dispone del Master Plan v3.0 y de TwitchLink 3.5.5 vanilla como referencia.
+## AD-01 — Punto de partida: repo vacío, sin código heredado de Twick Hub
+**Contexto:** No existe ningún repositorio parcial de Twick Hub. Solo se dispone del Master Plan v3.0 y de TwitchLink 3.5.5 vanilla como referencia.
 **Decisión:** FASE 0 audita exclusivamente TwitchLink 3.5.5 como fuente de comportamiento/UX a preservar. FASE 1 construye el skeleton desde cero.
 **Consecuencias:** El "estado real del repositorio actual" que pide el Master Plan §34 es, en este caso, el estado de 3.5.5 — ver `docs/migration-map.md`.
 
@@ -23,8 +23,9 @@ Formato ADR ligero: contexto → decisión → consecuencias. Estas decisiones s
 
 ## AD-04 — Twitch: EventSub por WebSocket, con credencial de aplicación separada de la de usuario
 **Contexto:** El PubSub heredado de Twitch fue apagado permanentemente el 14 de abril de 2025 — no es una preferencia arquitectónica, es un hecho verificado: `Services/Twitch/PubSub/*` de 3.5.5 ya no puede conectar a Twitch. El presupuesto de coste de EventSub por token de usuario (`max_total_cost=10`, ~1 de coste por suscripción a un canal ajeno) limita a ~3–5 canales monitoreables en tiempo real por token de usuario — insuficiente para una lista de favoritos típica.
-**Decisión:** `TwitchEventSubProvider` usará dos credenciales separadas: (1) el token de usuario actual, extraído de sesión de navegador, para GQL privado/Integrity/reproducción/descarga; (2) un client_id/secret propio de TwitchLink Next (app registrada en Twitch) para EventSub, a validar en FASE 4d si el transporte WebSocket acepta tokens de aplicación o exige Webhooks (que requerirían endpoint público, indeseable en una app de escritorio).
+**Decisión:** `TwitchEventSubProvider` usará dos credenciales separadas: (1) el token de usuario actual, extraído de sesión de navegador, para GQL privado/Integrity/reproducción/descarga; (2) un client_id/secret propio de Twick Hub (app registrada en Twitch) para EventSub, a validar en FASE 4d si el transporte WebSocket acepta tokens de aplicación o exige Webhooks (que requerirían endpoint público, indeseable en una app de escritorio).
 **Consecuencias:** Es el mayor riesgo técnico abierto del proyecto — ver RISK-TWITCH-01 en risk-register.md. Mitigación de respaldo: Helix `Get Streams` en polling de bajo coste para favoritos que excedan presupuesto.
+**Corrección (FASE 4d):** La documentación oficial de EventSub confirma que el transporte WebSocket exige un token de **usuario** para crear subscriptions — los tokens de aplicación son el camino de Webhooks (servidor-a-servidor), que este proyecto no tiene ni quiere montar solo para esto (sería el "backend remoto solo por comodidad" que el propio Master Plan prohíbe). Se descarta la idea de una credencial de aplicación separada para EventSub — `TwitchEventSubProvider` usa el mismo token de usuario de FASE 4a. El techo de RISK-TWITCH-01 (~5 canales) es real, no una hipótesis a resolver con ingeniería — ver AD-23.
 
 ## AD-05 — Kick: capacidades oficiales primero, VOD/Clips fuera del core
 **Contexto:** La API pública oficial de Kick (`api.kick.com/public/v1`, OAuth 2.1+PKCE, activa desde ~mayo 2026) cubre Users, Channels, Chat, Livestreams, Moderation, Rewards, Categories y Events. No se encontró VOD ni Clips en la superficie pública — el acceso conocido (incluida la app Android oficial de Kick) pasa por `api.kick.com/private/v1/...`, no oficial.
@@ -58,7 +59,7 @@ Formato ADR ligero: contexto → decisión → consecuencias. Estas decisiones s
 
 ## AD-11 — Theme/Navigation/Toast como QML singletons vía `@QmlElement`/`@QmlSingleton` (FASE 2)
 **Contexto:** El shell necesita estado compartido con QML (tema activo, página actual, cola de toasts) sin recurrir a un service locator. PySide6 6.x ofrece registro de tipos QML declarativo vía los decoradores `@QmlElement`/`@QmlSingleton` de `PySide6.QtQml` — probado aislado antes de construir el resto del shell encima.
-**Decisión:** `presentation/qml_bridge/{theme,navigation,toast}.py` exponen `Theme`, `NavigationController` y `ToastController` así. `bootstrap/application.py` importa `presentation.qml_bridge` antes de cargar cualquier QML — el import ejecuta los decoradores y registra los tipos; sin ese import, `import TwitchLinkNext 1.0` fallaría en QML.
+**Decisión:** `presentation/qml_bridge/{theme,navigation,toast}.py` exponen `Theme`, `NavigationController` y `ToastController` así. `bootstrap/application.py` importa `presentation.qml_bridge` antes de cargar cualquier QML — el import ejecuta los decoradores y registra los tipos; sin ese import, `import TwickHub 1.0` fallaría en QML.
 **Consecuencias:** Es el único patrón "global" permitido — no es un service locator porque QML lo resuelve por el sistema de tipos de Qt, no por lookup manual de código Python; nada en Domain/Application lo toca (`presentation/qml_bridge` es exclusivamente de la capa Presentation). `ToastController` solo emite la señal `toastRequested`; la lista visible de toasts vive en `ToastHost.qml`, no en Python — es puro estado de presentación transitorio, sin significado de negocio.
 **Nota de stubs:** el stub de tipos de PySide6 no modela bien `Property()` en forma funcional ni `qmlTypeId()` con argumentos `str` (ambos funcionan correctamente en runtime, verificado). Los tests que topan con esto llevan `cast()`/`pyright: ignore` puntuales y comentados — ver `tests/test_theme.py` y `tests/test_qml_shell.py`.
 
@@ -116,3 +117,18 @@ Formato ADR ligero: contexto → decisión → consecuencias. Estas decisiones s
 **Contexto:** El campo `hideAds` de `StreamPlaybackAccessToken` en 3.5.5 sí revela cuándo Twitch no muestra anuncios a un viewer específico (Turbo o beneficio de sub ad-free).
 **Decisión:** Se porta `stream_hides_ads()` y se registra su resultado, pero no se usa para tomar ninguna decisión todavía (no hay pipeline de descarga real aún — eso es FASE 7). No se declara resuelto RISK-TWITCH-02: este campo solo confirma cuándo un viewer específico NO tiene el problema; no dice nada sobre qué hay en los segmentos para quien sí los recibe.
 **Consecuencias:** FASE 7 (Download Engine) es quien realmente necesita decidir qué hacer con `hideAds`/SSAI al procesar segmentos — ver docs/risk-register.md RISK-TWITCH-02, actualizado con esta precisión.
+
+## AD-23 — El techo de EventSub se aplica de verdad, no se documenta y ya
+**Contexto:** RISK-TWITCH-01 identificó el techo de ~5 canales (`floor(10/2)`, dos tipos de subscription por canal) desde FASE 0. Implementarlo sin aplicarlo dejaría que el código intente suscribir un sexto canal y falle de forma confusa contra la API real.
+**Decisión:** `CapacityGovernor` (`infrastructure/twitch/eventsub/capacity.py`) rechaza explícitamente con `CapacityExceededError` antes de intentar la subscription — nunca deja que Twitch sea quien lo descubra. `TwitchEventSubProvider.subscribe()` libera la reserva si la creación de la subscription falla, para que un fallo no deje presupuesto "fantasma" ocupado.
+**Consecuencias:** FASE 10 (Live Monitor) es quien decide qué hacer con favoritos más allá del techo (polling Helix de bajo coste, ya previsto como mitigación) — esta fase solo garantiza que el límite nunca se viola en silencio.
+
+## AD-24 — Bus de eventos interno en Domain, EventSub nunca toca UI
+**Contexto:** Master Plan §41 exige "conectar OFFLINE → ONLINE mediante eventos internos" y "no conectar EventSub directamente con UI."
+**Decisión:** `domain/events.py` agrega `ChannelWentOnline`/`ChannelWentOffline` + un `EventBus` mínimo (suscribir/publicar, sin frameworks). `TwitchEventSubProvider` publica ahí — no conoce ni le importa quién escucha. Nadie escucha todavía (eso es FASE 9/10/11); esta fase solo construye el bus y publica.
+**Consecuencias:** Cuando FASE 10 conecte Favoritos/Notificaciones al bus, no necesita tocar nada de `infrastructure/twitch/eventsub/`.
+
+## AD-25 — `_receive_and_handle_one` como unidad de trabajo testeable, separada del loop infinito
+**Contexto:** Un cliente WebSocket real corre en un loop infinito (`run_forever`), difícil de testear de forma determinista sin correr una tarea de fondo real.
+**Decisión:** Toda la lógica (recibir, dedupe, despachar por tipo, reconectar ante corte anormal) vive en `_receive_and_handle_one()`, una corrutina que procesa exactamente un mensaje y retorna. `run_forever()` es un `while True` de una línea que la llama. Los tests llaman `_receive_and_handle_one()` directamente con una conexión falsa que entrega mensajes guionados — sin tareas de fondo, sin timing real.
+**Consecuencias:** Encontrado real durante la implementación: la primera llamada tras conectar consume el mensaje de bienvenida Y el primer mensaje real en la misma llamada — documentado en los tests, no es un bug.

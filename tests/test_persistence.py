@@ -1,6 +1,6 @@
 from sqlalchemy import text
 
-from twitchlink_next.bootstrap.container import Container
+from twick_hub.bootstrap.container import Container
 
 
 def test_engine_connects_and_executes(container: Container):

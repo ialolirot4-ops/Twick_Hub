@@ -15,8 +15,8 @@ import sys
 
 _PROBE = """
 import logging
-import twitchlink_next.main  # noqa: F401
-import twitchlink_next.bootstrap.dependencies  # noqa: F401
+import twick_hub.main  # noqa: F401
+import twick_hub.bootstrap.dependencies  # noqa: F401
 
 # If either import above had constructed a QGuiApplication, opened a
 # database connection, or configured logging as a side effect (the
