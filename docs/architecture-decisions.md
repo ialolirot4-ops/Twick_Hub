@@ -132,3 +132,18 @@ Formato ADR ligero: contexto → decisión → consecuencias. Estas decisiones s
 **Contexto:** Un cliente WebSocket real corre en un loop infinito (`run_forever`), difícil de testear de forma determinista sin correr una tarea de fondo real.
 **Decisión:** Toda la lógica (recibir, dedupe, despachar por tipo, reconectar ante corte anormal) vive en `_receive_and_handle_one()`, una corrutina que procesa exactamente un mensaje y retorna. `run_forever()` es un `while True` de una línea que la llama. Los tests llaman `_receive_and_handle_one()` directamente con una conexión falsa que entrega mensajes guionados — sin tareas de fondo, sin timing real.
 **Consecuencias:** Encontrado real durante la implementación: la primera llamada tras conectar consume el mensaje de bienvenida Y el primer mensaje real en la misma llamada — documentado en los tests, no es un bug.
+
+## AD-26 — OAuth de Kick: listener HTTP local de un solo uso, no esquema de URI personalizado
+**Contexto:** Kick usa OAuth 2.1 + PKCE real (a diferencia de Twitch, que no tiene flujo OAuth propio para este proyecto — ver AD-04/AD-15). Una app de escritorio necesita recibir el redirect del navegador de alguna forma.
+**Decisión:** `infrastructure/kick/redirect_listener.py` levanta un servidor HTTP local de un solo uso (`http.server` en un hilo, coordinado con asyncio vía `call_soon_threadsafe`) en `localhost` — no un esquema de URI personalizado (`twickhub://...`), que exige registro específico por sistema operativo y no lo pide la documentación de Kick. `RedirectListener` es un protocol angosto para poder testear sin navegador real.
+**Consecuencias:** Verificado de punta a punta en esta fase con una petición HTTP real (no mockeada) contra el listener — es el test más directo de todo el proyecto hasta ahora, porque no depende de que Kick sea alcanzable.
+
+## AD-27 — `KickUnofficialAdapter` pospuesto, no implementado en FASE 5
+**Contexto:** Master Plan §42: "Solo implementar estas capacidades [VOD/clips/playback/download] si están validadas." docs/kick-audit.md reconfirma con evidencia más fuerte que en FASE 0 que VOD/Clips siguen sin oficializarse.
+**Decisión:** No se construye `KickUnofficialAdapter` esta fase. A diferencia de Twitch (donde FASE 4a-4c pudieron portar mecanismos ya probados de TwitchLink 3.5.5), Kick no tiene código de referencia propio en este proyecto — construir un adapter no oficial ahora significaría escribir contra endpoints reverse-engineered de terceros sin poder verificarlos contra una cuenta Kick real, exactamente el tipo de cosa que "no inventar endpoints" busca evitar.
+**Consecuencias:** Kick queda con paridad funcional parcial frente a Twitch (sin VOD/Clips) hasta que la API oficial los cubra o una fase futura decida construir el adapter no oficial con la debida cautela (aislado, marcado, desactivable — tal como exige el Master Plan si en algún momento se implementa).
+
+## AD-28 — Mapeo de Usuario de Kick, hecho a propósito de forma defensiva
+**Contexto:** A diferencia de Channel/Livestream (confirmados campo por campo contra la documentación oficial de un SDK), no se encontró un ejemplo de respuesta confirmado para `GET /users`.
+**Decisión:** `infrastructure/kick/mappers.py::map_user` usa `.get()` con nombres de campo alternativos (`user_id`/`id`, `name`/`username`) en vez de asumir una forma exacta, y el módulo documenta explícitamente esta incertidumbre en vez de ocultarla.
+**Consecuencias:** Confirmar contra una respuesta real de `/users` antes de que el flujo de cuenta de Kick se use en producción — señalado aquí y en el propio código, no asumido como resuelto.
