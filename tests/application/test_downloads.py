@@ -27,7 +27,7 @@ async def test_enqueue_download_saves_and_dispatches_to_the_engine():
 
     download = await use_case.execute(_MEDIA, "/tmp/out.mp4", "720p")
 
-    assert download.status == DownloadStatus.PENDING
+    assert download.status == DownloadStatus.QUEUED
     assert await downloads.get(download.id) == download
     assert len(engine.enqueued) == 1
     assert engine.enqueued[0].download_id == download.id

@@ -26,12 +26,21 @@ class MediaKind(StrEnum):
 
 
 class DownloadStatus(StrEnum):
-    PENDING = "pending"
+    """Master Plan §44 (FASE 7) names these eight states exactly.
+    ``PENDING`` (FASE 3's original name) is renamed to ``QUEUED``, and
+    ``PREPARING``/``PROCESSING`` are new — see
+    docs/architecture-decisions.md's FASE 7 entry for why this rename
+    happened retroactively instead of adding new states under the old
+    name."""
+
+    QUEUED = "queued"
+    PREPARING = "preparing"
     DOWNLOADING = "downloading"
-    PAUSED = "paused"
+    PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
 
 
 class SegmentStatus(StrEnum):

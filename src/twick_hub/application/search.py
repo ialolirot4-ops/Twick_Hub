@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from twick_hub.application.platform_registry import PlatformRegistry
 from twick_hub.domain.enums import Platform
 from twick_hub.domain.identity import Channel
 from twick_hub.domain.protocols import ChannelDirectory
@@ -23,6 +24,15 @@ class SearchContentUseCase:
     """
 
     directories: dict[Platform, ChannelDirectory]
+
+    @classmethod
+    def from_registry(cls, registry: PlatformRegistry) -> SearchContentUseCase:
+        """Master Plan §43 (FASE 6, "unified search"): builds the same
+        mapping from a ``PlatformRegistry`` instead of the caller
+        assembling ``{Platform: ChannelDirectory}`` by hand. The
+        ``directories=`` constructor is unchanged — existing callers and
+        tests keep working as-is."""
+        return cls(directories=registry.channel_directories)
 
     async def execute(self, query: str, platform: Platform | None = None) -> list[Channel]:
         if platform is not None:

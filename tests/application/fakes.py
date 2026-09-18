@@ -9,8 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from twick_hub.domain.collections import Favorite, Playlist, ScheduledDownload
+from twick_hub.domain.content import Clip, Stream, Video
 from twick_hub.domain.downloads import Download, DownloadJob
-from twick_hub.domain.identity import Channel, User
+from twick_hub.domain.identity import Channel, PlatformAccount, User
 from twick_hub.domain.notifications import Notification
 from twick_hub.domain.value_objects import Media, PlatformRef, PlaybackSource
 
@@ -47,6 +48,69 @@ class FakePlaybackResolver:
 
     async def available_qualities(self, media: Media) -> list[str]:
         return list(self.qualities)
+
+
+@dataclass
+class FakeLiveStreamProvider:
+    streams: dict[str, Stream] = field(default_factory=dict)
+
+    async def get_live_stream(self, channel_ref: PlatformRef) -> Stream | None:
+        return self.streams.get(channel_ref.external_id)
+
+
+@dataclass
+class FakeAccountProvider:
+    account: PlatformAccount | None = None
+
+    async def connect(self) -> PlatformAccount:
+        if self.account is None:
+            raise LookupError("no account configured")
+        return self.account
+
+    async def disconnect(self) -> None:
+        self.account = None
+
+    async def current_account(self) -> PlatformAccount | None:
+        return self.account
+
+
+@dataclass
+class FakeLiveMonitor:
+    subscribed: set[str] = field(default_factory=set)
+
+    async def subscribe(self, channel_ref: PlatformRef) -> None:
+        self.subscribed.add(channel_ref.external_id)
+
+    async def unsubscribe(self, channel_ref: PlatformRef) -> None:
+        self.subscribed.discard(channel_ref.external_id)
+
+
+@dataclass
+class FakeVideoProvider:
+    videos: dict[str, Video] = field(default_factory=dict)
+
+    async def get_video(self, ref: PlatformRef) -> Video:
+        video = self.videos.get(ref.external_id)
+        if video is None:
+            raise LookupError(f"no such video: {ref}")
+        return video
+
+    async def list_videos(self, channel_ref: PlatformRef) -> list[Video]:
+        return [v for v in self.videos.values() if v.channel_ref == channel_ref]
+
+
+@dataclass
+class FakeClipProvider:
+    clips: dict[str, Clip] = field(default_factory=dict)
+
+    async def get_clip(self, ref: PlatformRef) -> Clip:
+        clip = self.clips.get(ref.external_id)
+        if clip is None:
+            raise LookupError(f"no such clip: {ref}")
+        return clip
+
+    async def list_clips(self, channel_ref: PlatformRef) -> list[Clip]:
+        return [c for c in self.clips.values() if c.channel_ref == channel_ref]
 
 
 @dataclass

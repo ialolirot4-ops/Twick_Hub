@@ -28,7 +28,7 @@ class Download:
     media: Media
     destination_path: str
     quality_label: str
-    status: DownloadStatus = DownloadStatus.PENDING
+    status: DownloadStatus = DownloadStatus.QUEUED
     progress_percent: float = 0.0
     id: str = field(default_factory=lambda: uuid4().hex)
     created_at: datetime = field(default_factory=datetime.now)
