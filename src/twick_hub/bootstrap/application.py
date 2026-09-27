@@ -28,7 +28,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from pathlib import Path
 
 import qasync
 from PySide6.QtCore import QUrl
@@ -36,13 +35,17 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
 from twick_hub.bootstrap.container import Container
+from twick_hub.bootstrap.runtime_paths import package_root
 from twick_hub.presentation import (
     qml_bridge,  # noqa: F401  (registers QML singletons on import)
 )
 
 logger = logging.getLogger(__name__)
 
-_QML_MAIN = Path(__file__).resolve().parents[1] / "presentation" / "qml" / "Main.qml"
+# FASE 19: computed via runtime_paths.package_root(), not a bare
+# ``Path(__file__)`` walk — see that module's docstring for why a frozen
+# (PyInstaller) build needs a different base path than a source run.
+_QML_MAIN = package_root() / "presentation" / "qml" / "Main.qml"
 
 
 class Application:
