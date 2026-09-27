@@ -1,0 +1,71 @@
+# FASE 19 (Packaging). Produces the real Windows x64 artifact that this
+# sandbox cannot build directly: PyInstaller does not cross-compile, so a
+# genuine .exe/bundle can only come from actually running it on Windows.
+# This workflow is that real run — see docs/packaging.md for the full
+# story, including exactly what was and wasn't verified in-sandbox before
+# this workflow existed.
+name: Build Windows x64
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project (dev extras) + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pyinstaller
+
+      - name: Test / lint / type-check before packaging
+        # Same gate FASE 18 established — a real Windows build is not
+        # produced from a tree that doesn't pass its own test suite on
+        # that platform. `continue-on-error` is deliberately absent:
+        # a red suite here should fail the build, not just warn.
+        run: |
+          pytest -q
+          ruff check .
+          pyright
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/pyinstaller/twick_hub.spec --noconfirm
+
+      - name: Smoke-test the frozen build
+        # Mirrors the offscreen smoke test already run against the Linux
+        # dry-run build in-sandbox (see docs/packaging.md) — starts the
+        # real Windows binary, gives it a few seconds to load QML and
+        # log its startup line, then stops it. This does not replace a
+        # human actually opening the window at least once before a real
+        # release, but it does catch an obviously broken bundle (missing
+        # QML data, a hidden import PyInstaller didn't collect, etc.)
+        # right here in CI instead of after a user downloads it.
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "dist/TwickHub/TwickHub.exe" -PassThru
+          Start-Sleep -Seconds 5
+          if ($proc.HasExited) {
+            Write-Error "TwickHub.exe exited on its own within 5 seconds (exit code $($proc.ExitCode))."
+            exit 1
+          }
+          Stop-Process -Id $proc.Id -Force
+
+      - name: Zip the portable bundle
+        shell: pwsh
+        run: Compress-Archive -Path "dist/TwickHub" -DestinationPath "TwickHub-windows-x64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TwickHub-windows-x64
+          path: TwickHub-windows-x64.zip
+          if-no-files-found: error
