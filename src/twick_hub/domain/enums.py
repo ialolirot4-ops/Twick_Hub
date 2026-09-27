@@ -51,12 +51,21 @@ class SegmentStatus(StrEnum):
 
 class ScheduleTrigger(StrEnum):
     """When a :class:`~twick_hub.domain.collections.ScheduledDownload`
-    fires. ON_NEXT_LIVE covers the common "auto-download this channel's next
-    stream" case already present in TwitchLink 3.5.5
-    (docs/functional-baseline.md); RECURRING is new."""
+    fires (FASE 11 gives each value its meaning — FASE 3 only named them):
+
+    - ``ON_NEXT_LIVE``: the channel's next go-live, once, then it is done.
+    - ``RECURRING``: *every* go-live, until the user disables it. This is
+      TwitchLink 3.5.5's scheduled-download preset exactly (source:
+      ``Download/ScheduledDownloadManager.py`` — it keeps recording each
+      time the channel comes online), independent of favorites.
+    - ``AT_TIME``: at a date/time (``run_at``), optionally repeating weekly
+      (``weekdays``); the channel is recorded if it is live inside the
+      ``window_seconds`` that follow. New in Twick Hub (Master Plan §20).
+    """
 
     ON_NEXT_LIVE = "on_next_live"
     RECURRING = "recurring"
+    AT_TIME = "at_time"
 
 
 class NotificationKind(StrEnum):
@@ -64,3 +73,71 @@ class NotificationKind(StrEnum):
     DOWNLOAD_COMPLETED = "download_completed"
     DOWNLOAD_FAILED = "download_failed"
     SCHEDULED_DOWNLOAD_TRIGGERED = "scheduled_download_triggered"
+
+
+class ScheduleOutcome(StrEnum):
+    """How a scheduled download's most recent run ended."""
+
+    COMPLETED = "completed"
+    MISSED = "missed"  # the window closed without the channel ever being live
+    FAILED = "failed"  # every attempt failed
+    CANCELLED = "cancelled"
+
+
+class SchedulePhase(StrEnum):
+    """Where a scheduled download is *right now* — always derived, never
+    stored, so it can't drift from ``next_due_at``/``download_id``."""
+
+    DISABLED = "disabled"
+    SCHEDULED = "scheduled"  # AT_TIME, due time still ahead
+    WAITING_LIVE = "waiting_live"  # armed: record as soon as the channel is live
+    RUNNING = "running"  # a recording is in progress
+    EXPIRED = "expired"  # AT_TIME, window closed without a recording
+
+
+class Theme(StrEnum):
+    """Appearance setting (FASE 13, Master Plan §50). ``SYSTEM`` follows the
+    OS's own light/dark setting rather than fixing one — the same "system
+    default" pattern the Settings page mock already uses for time zone."""
+
+    SYSTEM = "system"
+    LIGHT = "light"
+    DARK = "dark"
+
+
+class LegacyMigrationStatus(StrEnum):
+    """Lifecycle of one :class:`~twick_hub.domain.migration.LegacyMigrationRun`
+    (FASE 15, Master Plan §52). Mirrors ``UpdateStatus``'s "an entity is a
+    value with an id and a status" shape (FASE 14) — a migration run is
+    inspectable after the fact, possibly across a restart, the same reason
+    ``UpdateAttempt`` is persisted rather than kept in memory only.
+
+    There is no ``PARTIALLY_COMPLETED``: ``COMPLETED_WITH_WARNINGS`` is
+    that state's honest name — every section the flow could safely
+    attempt did run, but at least one *item* inside a section (a bookmark
+    login that doesn't resolve to a channel, say) was individually
+    skipped and is listed in ``LegacyMigrationRun.warnings`` rather than
+    aborting the whole run. Master Plan §0.7: "no afirmar PASS sin
+    evidencia" applies at the item level too — a skipped item is recorded
+    as skipped, never silently dropped or claimed migrated.
+    """
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    COMPLETED_WITH_WARNINGS = "completed_with_warnings"
+    FAILED = "failed"
+    ROLLED_BACK = "rolled_back"
+
+
+class UpdateStatus(StrEnum):
+    """Lifecycle of one ``UpdateAttempt`` (FASE 14, Master Plan §51)."""
+
+    CHECKING = "checking"
+    AVAILABLE = "available"  # a newer version exists; nothing downloaded yet
+    DOWNLOADING = "downloading"
+    VERIFYING = "verifying"  # checksum/signature check of the downloaded artifact
+    READY_TO_INSTALL = "ready_to_install"
+    INSTALLING = "installing"
+    INSTALLED = "installed"
+    FAILED = "failed"
+    ROLLED_BACK = "rolled_back"

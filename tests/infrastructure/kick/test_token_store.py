@@ -55,3 +55,21 @@ def test_broken_backend_raises_on_save():
 def test_broken_backend_delete_is_silently_tolerated():
     store = KickTokenStore(FakeKeyring(broken=True))
     store.delete("user-tokens")  # must not raise
+
+
+# FASE 18 — Testing: the constructor's default-backend branch (no explicit
+# ``keyring_backend`` passed) and ``load()``'s own broken-backend branch
+# (only ``save()``'s was covered before) had no tests.
+
+
+def test_default_keyring_backend_is_the_real_keyring_module():
+    import keyring as real_keyring
+
+    store = KickTokenStore()
+    assert store._keyring is real_keyring
+
+
+def test_broken_backend_raises_on_load():
+    store = KickTokenStore(FakeKeyring(broken=True))
+    with pytest.raises(KickAuthError):
+        store.load("user-tokens")

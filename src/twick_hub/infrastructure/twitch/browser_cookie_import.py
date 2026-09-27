@@ -24,6 +24,7 @@ import configparser
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from twick_hub.infrastructure.twitch.errors import NoBrowserSessionFoundError
@@ -97,12 +98,30 @@ class FirefoxCookieImporter:
         Twitch itself set there when the user logged in through their
         actual browser.
         """
+        # FASE 17 hardening: ``profile.key`` comes from ``profiles.ini``
+        # (list_profiles(), above) — normally the user's own, trusted
+        # Firefox config, but still a value read off disk rather than a
+        # constant. Resolve the joined path and refuse to open anything
+        # outside Firefox's own user-data directory, so a malformed or
+        # tampered ``profiles.ini`` (e.g. ``Path=../../../../some/secret``)
+        # can't be used to point a real, running Firefox process at an
+        # arbitrary directory on the user's machine. Checked before the
+        # (comparatively expensive) selenium import, so refusing never pays
+        # that cost either.
+        user_data_root = Path(_firefox_user_data_path()).resolve()
+        profile_dir = (user_data_root / profile.key).resolve()
+        if user_data_root not in profile_dir.parents and profile_dir != user_data_root:
+            raise NoBrowserSessionFoundError(
+                f"Refusing to open Firefox profile outside its user-data directory: "
+                f"{profile.key!r}"
+            )
+
         # Imported here, not at module level — see this module's docstring.
         import selenium.webdriver
 
         options = selenium.webdriver.FirefoxOptions()
         options.profile = selenium.webdriver.FirefoxProfile(  # type: ignore[attr-defined]
-            os.path.join(_firefox_user_data_path(), profile.key)
+            str(profile_dir)
         )
         options.add_argument("-headless")
 

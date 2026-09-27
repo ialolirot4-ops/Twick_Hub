@@ -15,6 +15,7 @@ from twick_hub.infrastructure.persistence.engine import (
     build_engine,
     build_session_factory,
 )
+from twick_hub.infrastructure.persistence.favorite_repository import SqlFavoriteRepository
 from twick_hub.logging_setup import configure_logging
 
 
@@ -24,9 +25,11 @@ def build_container(config: AppConfig | None = None) -> Container:
 
     engine = build_engine(resolved_config)
     session_factory = build_session_factory(engine)
+    favorites = SqlFavoriteRepository(session_factory)
 
     return Container(
         config=resolved_config,
         engine=engine,
         session_factory=session_factory,
+        favorites=favorites,
     )

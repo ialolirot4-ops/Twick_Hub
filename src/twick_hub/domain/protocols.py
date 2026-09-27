@@ -23,13 +23,20 @@ queries) is I/O.
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from twick_hub.domain.collections import Favorite, Playlist, ScheduledDownload
 from twick_hub.domain.content import Clip, Stream, Video
 from twick_hub.domain.downloads import Download, DownloadJob
+from twick_hub.domain.enums import DownloadStatus
 from twick_hub.domain.identity import Channel, PlatformAccount
+from twick_hub.domain.migration import LegacyMigrationRun
+from twick_hub.domain.monitoring import LiveStatusBatch
 from twick_hub.domain.notifications import Notification
+from twick_hub.domain.settings import Settings
+from twick_hub.domain.updates import UpdateAttempt, UpdateInfo
 from twick_hub.domain.value_objects import Media, PlatformRef, PlaybackSource
 
 # --- platform capabilities -------------------------------------------------
@@ -65,6 +72,24 @@ class ChannelDirectory(Protocol):
 @runtime_checkable
 class LiveStreamProvider(Protocol):
     async def get_live_stream(self, channel_ref: PlatformRef) -> Stream | None: ...
+
+
+@runtime_checkable
+class BatchLiveStatusProvider(Protocol):
+    """Live status for many channels in as few requests as the platform
+    allows — the backend of every *polling* live monitor (FASE 10).
+    Distinct from ``LiveStreamProvider``, which answers one channel per
+    call: polling N favorites one call each is exactly the cost the
+    batch endpoints (Kick ``/livestreams``, Twitch Helix ``/streams``)
+    exist to avoid.
+
+    Contract: raises ``domain.errors.RateLimitedError`` when the platform
+    says to slow down, any other exception on failure — never a partial
+    result presented as complete, since a channel missing from
+    ``LiveStatusBatch.live`` means "offline".
+    """
+
+    async def get_live_streams(self, channel_refs: Sequence[PlatformRef]) -> LiveStatusBatch: ...
 
 
 @runtime_checkable
@@ -135,7 +160,7 @@ class ChannelRepository(Protocol):
 
 @runtime_checkable
 class FavoriteRepository(Protocol):
-    async def list_all(self) -> list[Favorite]: ...
+    async def list_all(self, *, limit: int | None = None, offset: int = 0) -> list[Favorite]: ...
 
     async def get_by_channel(self, channel_ref: PlatformRef) -> Favorite | None: ...
 
@@ -146,25 +171,31 @@ class FavoriteRepository(Protocol):
 
 @runtime_checkable
 class DownloadRepository(Protocol):
-    async def list_all(self) -> list[Download]: ...
+    async def list_all(self, *, limit: int | None = None, offset: int = 0) -> list[Download]: ...
 
     async def get(self, download_id: str) -> Download | None: ...
 
     async def save(self, download: Download) -> None: ...
 
+    async def list_by_status(self, statuses: Collection[DownloadStatus]) -> list[Download]: ...
+
 
 @runtime_checkable
 class PlaylistRepository(Protocol):
-    async def list_all(self) -> list[Playlist]: ...
+    async def list_all(self, *, limit: int | None = None, offset: int = 0) -> list[Playlist]: ...
 
     async def get(self, playlist_id: str) -> Playlist | None: ...
 
     async def save(self, playlist: Playlist) -> None: ...
 
+    async def delete(self, playlist_id: str) -> None: ...
+
 
 @runtime_checkable
 class ScheduledDownloadRepository(Protocol):
-    async def list_all(self) -> list[ScheduledDownload]: ...
+    async def list_all(
+        self, *, limit: int | None = None, offset: int = 0
+    ) -> list[ScheduledDownload]: ...
 
     async def save(self, scheduled: ScheduledDownload) -> None: ...
 
@@ -173,8 +204,104 @@ class ScheduledDownloadRepository(Protocol):
 
 @runtime_checkable
 class NotificationRepository(Protocol):
-    async def list_unread(self) -> list[Notification]: ...
+    async def list_unread(
+        self, *, limit: int | None = None, offset: int = 0
+    ) -> list[Notification]: ...
 
     async def save(self, notification: Notification) -> None: ...
 
     async def mark_read(self, notification_id: str) -> None: ...
+
+
+@runtime_checkable
+class SettingsRepository(Protocol):
+    """One row, always present — ``get()`` never returns ``None`` (a
+    fresh install has no saved row, so it returns ``Settings()``, the
+    defaults, exactly like ``AppConfig`` runs with zero configuration).
+    """
+
+    async def get(self) -> Settings: ...
+
+    async def save(self, settings: Settings) -> None: ...
+
+
+@runtime_checkable
+class UpdateSource(Protocol):
+    """Where update manifests come from. ``check()`` either returns a
+    fully origin-verified ``UpdateInfo`` (see domain/updates.py's module
+    docstring — signature and host already checked by the time it
+    returns) or raises ``UpdateOriginError``; there is no third outcome."""
+
+    async def check(self) -> UpdateInfo | None: ...  # None: no manifest published yet
+
+
+@runtime_checkable
+class UpdateArtifactDownloader(Protocol):
+    """What ``UpdateService`` needs from ``infrastructure.updates.UpdateDownloader``
+    — split out as its own protocol (like every other application-layer
+    dependency here) purely so tests can substitute a fake; there is only
+    one real implementation."""
+
+    async def download(self, info: UpdateInfo, destination: Path) -> Path: ...
+
+
+@runtime_checkable
+class UpdateInstaller(Protocol):
+    """The packaging-dependent half of updating (docs/architecture-
+    decisions.md's FASE 14 entry: real OS-specific installers are pending
+    FASE 19's packaging decision). ``install()`` must itself back up
+    whatever it needs to for ``rollback()`` to work — the caller doesn't
+    manage that state."""
+
+    async def install(self, artifact_path: str) -> None: ...
+
+    async def rollback(self) -> None: ...
+
+
+class UpdateAttemptRepository(Protocol):
+    async def get(self, attempt_id: str) -> UpdateAttempt | None: ...
+
+    async def list_all(
+        self, *, limit: int | None = None, offset: int = 0
+    ) -> list[UpdateAttempt]: ...
+
+    async def save(self, attempt: UpdateAttempt) -> None: ...
+
+
+@runtime_checkable
+class LegacyMigrationRunRepository(Protocol):
+    """FASE 15. ``find_by_source_hash`` is what makes a whole migration
+    run idempotent (domain/migration.py's module docstring) — checked
+    once, before any writes, instead of every repository call having to
+    re-derive "did I already do this" from scratch."""
+
+    async def get(self, run_id: str) -> LegacyMigrationRun | None: ...
+
+    async def list_all(
+        self, *, limit: int | None = None, offset: int = 0
+    ) -> list[LegacyMigrationRun]: ...
+
+    async def find_by_source_hash(self, source_sha256: str) -> LegacyMigrationRun | None: ...
+
+    async def save(self, run: LegacyMigrationRun) -> None: ...
+
+
+@runtime_checkable
+class SecretTokenStore(Protocol):
+    """Where a platform's durable secret (an OAuth/session token) is
+    persisted — never in JSON/SQLite (Master Plan §52; AD-07).
+    Deliberately narrower than ``AccountProvider``: FASE 15's migrator
+    already has a token a legacy install obtained years ago, not a
+    sign-in flow to run, so it needs "store/remove this token under this
+    key," nothing more. ``infrastructure.twitch.token_store.TwitchTokenStore``
+    satisfies this structurally.
+
+    ``save``/``delete`` are synchronous here, matching
+    ``TwitchTokenStore``'s own (pre-existing, FASE 12) interface — a
+    deliberate mirror of that class's actual shape rather than a new
+    inconsistency with this file's "every I/O method is async" rule.
+    """
+
+    def save(self, key: str, token: str) -> None: ...
+
+    def delete(self, key: str) -> None: ...

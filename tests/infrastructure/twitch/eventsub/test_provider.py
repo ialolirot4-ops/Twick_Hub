@@ -337,3 +337,192 @@ async def test_stop_closes_the_connection():
     await provider.stop()
 
     assert connection.closed is True
+
+
+# --- FASE 10: consumption metrics, failure isolation, push-loss notification ---
+
+
+def test_capacity_exceeded_is_the_domain_capacity_error():
+    from twick_hub.domain.errors import LiveMonitorCapacityError
+
+    assert issubclass(CapacityExceededError, LiveMonitorCapacityError)
+
+
+async def test_stats_count_subscription_requests_and_channels():
+    connector = FakeConnector([FakeConnection([_welcome()])])
+    provider = _provider(connector)
+
+    await provider.subscribe(_CHANNEL_REF)
+    stats = provider.stats()
+
+    assert stats.requests == 2  # stream.online + stream.offline
+    assert stats.channels_watched == 1
+    assert stats.reconnects == 0
+    assert stats.errors == 0
+
+    await provider.unsubscribe(_CHANNEL_REF)
+    assert provider.stats().requests == 4  # two DELETEs
+    assert provider.stats().channels_watched == 0
+
+
+async def test_stats_count_a_rejected_subscription_as_an_error():
+    connector = FakeConnector([FakeConnection([_welcome()])])
+    provider = _provider(connector, http_client=_http_client(lambda r: httpx.Response(400)))
+
+    with pytest.raises(SubscriptionRejectedError):
+        await provider.subscribe(_CHANNEL_REF)
+
+    assert provider.stats().errors == 1
+
+
+async def test_stats_count_graceful_reconnect():
+    old = FakeConnection([_welcome(), _reconnect("r1", "sess2", "wss://new")])
+    new = FakeConnection([_welcome(session_id="sess2")])
+    provider = _provider(FakeConnector([old, new]))
+    await provider.subscribe(_CHANNEL_REF)
+
+    await provider._receive_and_handle_one()
+
+    assert provider.stats().reconnects == 1
+    assert provider.stats().abnormal_disconnects == 0
+
+
+async def test_stats_count_abnormal_disconnect_as_reconnect_and_abnormal():
+    first = FakeConnection([_welcome(), ConnectionClosedError(None, None)])
+    second = FakeConnection([_welcome(session_id="sess2")])
+    provider = _provider(FakeConnector([first, second]))
+    await provider.subscribe(_CHANNEL_REF)
+
+    await provider._receive_and_handle_one()
+
+    stats = provider.stats()
+    assert stats.reconnects == 1
+    assert stats.abnormal_disconnects == 1
+
+
+async def test_failed_reconnect_does_not_forget_the_channels_to_resubscribe():
+    """Regression (FASE 4d defect found in FASE 10): when opening the new
+    connection after an abnormal drop failed, the channel list was a local
+    variable and was lost — the retry connected fine but re-created no
+    subscription, leaving the channel silently unmonitored while still
+    reserving capacity."""
+    sub_counter = [0]
+    first = FakeConnection([_welcome(), ConnectionClosedError(None, None)])
+    second = FakeConnection([_welcome(session_id="sess2")])
+    attempts = [0]
+
+    class FlakyConnector:
+        async def __call__(self, url: str):
+            attempts[0] += 1
+            if attempts[0] == 1:
+                return first
+            if attempts[0] == 2:
+                raise OSError("network is down")
+            return second
+
+    provider = _provider(
+        FlakyConnector(), http_client=_http_client(_subscription_handler(sub_counter))
+    )
+    await provider.subscribe(_CHANNEL_REF)
+    assert sub_counter[0] == 2
+
+    with pytest.raises(OSError):
+        await provider._receive_and_handle_one()  # drop → reconnect attempt fails
+
+    # the caller's supervisor retries; the next attempt must restore the channel
+    second._script.append(_keepalive("k1"))
+    await provider._receive_and_handle_one()
+
+    assert sub_counter[0] == 4
+    assert provider.subscribed_channels == frozenset({_CHANNEL_REF})
+    assert provider.stats().channels_watched == 1
+
+
+async def test_unsubscribe_while_pending_resubscribe_forgets_the_channel():
+    first = FakeConnection([_welcome(), ConnectionClosedError(None, None)])
+
+    class DownConnector:
+        calls = 0
+
+        async def __call__(self, url: str):
+            DownConnector.calls += 1
+            if DownConnector.calls == 1:
+                return first
+            raise OSError("down")
+
+    provider = _provider(DownConnector())
+    await provider.subscribe(_CHANNEL_REF)
+    with pytest.raises(OSError):
+        await provider._receive_and_handle_one()
+
+    await provider.unsubscribe(_CHANNEL_REF)
+
+    assert provider.stats().channels_watched == 0
+    assert provider.capacity.used_cost == 0
+
+
+async def test_failed_details_lookup_on_stream_online_is_counted_and_does_not_raise():
+    class BrokenLiveStreams:
+        async def get_live_stream(self, channel_ref):
+            raise RuntimeError("gql down")
+
+    connection = FakeConnection([_welcome(), _notification("n1", "stream.online")])
+    provider = _provider(FakeConnector([connection]), live_stream_provider=BrokenLiveStreams())
+    seen = []
+    provider._event_bus.subscribe(lambda event: seen.append(event))
+
+    await provider._receive_and_handle_one()  # must not raise
+
+    assert seen == []
+    assert provider.stats().errors == 1
+
+
+async def test_revocation_notifies_push_loss_handlers():
+    from twick_hub.domain.monitoring import PushLossNotifier
+
+    connection = FakeConnection([_welcome(), _revocation("rev1", "stream.online")])
+    provider = _provider(FakeConnector([connection]))
+    lost = []
+    provider.on_push_lost(lost.append)
+
+    await provider._receive_and_handle_one()
+
+    assert isinstance(provider, PushLossNotifier)
+    assert lost == [_CHANNEL_REF]
+
+
+async def test_stop_makes_run_forever_return_instead_of_reconnecting():
+    """Without this, the socket ``stop()`` closes reads as an abnormal drop
+    and ``run_forever`` immediately opens a new connection."""
+    import asyncio
+
+    class BlockingConnection:
+        def __init__(self) -> None:
+            self._closed = asyncio.Event()
+            self._welcomed = False
+
+        async def recv(self) -> str:
+            if not self._welcomed:
+                self._welcomed = True
+                return _welcome()
+            await self._closed.wait()
+            raise ConnectionClosedError(None, None)
+
+        async def close(self) -> None:
+            self._closed.set()
+
+    connections_opened = [0]
+
+    async def connector(url: str):
+        connections_opened[0] += 1
+        return BlockingConnection()
+
+    provider = _provider(connector)
+    await provider.subscribe(_CHANNEL_REF)
+    task = asyncio.create_task(provider.run_forever())
+    await asyncio.sleep(0.01)
+
+    await provider.stop()
+    await asyncio.wait_for(task, timeout=1)
+
+    assert connections_opened[0] == 1  # never re-opened after stop()

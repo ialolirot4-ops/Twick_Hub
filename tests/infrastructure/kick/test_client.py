@@ -73,3 +73,55 @@ async def test_error_response_raises_kick_api_error():
     client = _client(lambda r: httpx.Response(403, text="forbidden"))
     with pytest.raises(KickAPIError, match="403"):
         await client.get_current_user()
+
+
+async def test_get_livestreams_repeats_the_broadcaster_user_id_key_once_per_id():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"data": [{"broadcaster_user_id": 1}]})
+
+    result = await _client(handler).get_livestreams(["1", "2", "3"])
+
+    assert result == [{"broadcaster_user_id": 1}]
+    assert request_path(seen[0]) == "/public/v1/livestreams"
+    # The wire format Kick's changelog documents ("multiple broadcaster_user_id
+    # params"): the same key repeated, not comma-joined, not "..._ids".
+    assert seen[0].url.params.get_list("broadcaster_user_id") == ["1", "2", "3"]
+    assert "broadcaster_user_ids" not in seen[0].url.params
+
+
+async def test_get_livestreams_with_no_ids_makes_no_request():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request expected")
+
+    assert await _client(handler).get_livestreams([]) == []
+
+
+async def test_429_raises_rate_limited_with_numeric_retry_after():
+    from twick_hub.domain.errors import RateLimitedError
+    from twick_hub.infrastructure.kick.errors import KickRateLimitedError
+
+    client = _client(lambda r: httpx.Response(429, headers={"Retry-After": "12"}, text="slow down"))
+
+    with pytest.raises(KickRateLimitedError) as info:
+        await client.get_livestreams(["1"])
+
+    assert info.value.retry_after == 12.0
+    assert isinstance(info.value, RateLimitedError)
+    assert isinstance(info.value, KickAPIError)  # existing handlers keep working
+
+
+async def test_429_without_a_usable_retry_after_reports_none():
+    from twick_hub.infrastructure.kick.errors import KickRateLimitedError
+
+    for headers in ({}, {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}):
+        client = _client(lambda r, h=headers: httpx.Response(429, headers=h))
+        with pytest.raises(KickRateLimitedError) as info:
+            await client.get_livestreams(["1"])
+        assert info.value.retry_after is None
+
+
+def request_path(request: httpx.Request) -> str:
+    return request.url.path

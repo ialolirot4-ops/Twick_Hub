@@ -63,3 +63,15 @@ Dado que VOD/Clips siguen sin validarse como oficiales (Master Plan §42: "Solo 
 2. `KickUnofficialAdapter` — pospuesto (AD-27), no implementado esta fase.
 3. Rate limits oficiales — seguimos sin una cifra confirmada; `RetryPolicy` de Kick queda pendiente para cuando exista lógica de reintento real (fuera del alcance de FASE 5).
 4. Polling adaptativo de `Livestreams` con backoff — sigue siendo tarea de FASE 10 (Live Monitor), no de FASE 5.
+
+## Actualización FASE 10 (Live Monitor)
+
+### Corrección: formato del parámetro de `GET /livestreams`
+La tabla de FASE 0 decía "`broadcaster_user_ids` (máx. 50)". Ese es el nombre del *argumento* del SDK de Rust. En HTTP, el changelog de KickDevDocs ("28/07/2025 — Allow multiple broadcaster_user_id params on livestreams") y el código fuente del crate `kick-api` confirman que es **la misma clave `broadcaster_user_id` repetida** (`?broadcaster_user_id=1&broadcaster_user_id=2`). Implementado así en `KickAPIClient.get_livestreams` (ver AD-53). El máximo de 50 por request proviene de la documentación de ese SDK; no se leyó de un texto oficial de Kick — verificar contra una respuesta real.
+
+### Otros datos confirmados en esta fase
+- `GET /livestreams` funciona con token de usuario o de aplicación, sin scope especial (misma fuente); solo devuelve los canales **en directo**: un id ausente de la respuesta es un canal offline. Campos usados: `broadcaster_user_id`, `stream_title`, `viewer_count`, `started_at`, `category.name`, `thumbnail`.
+- Rate limits oficiales: **siguen sin una cifra confirmada.** Se maneja `429` (`KickRateLimitedError`) respetando un `Retry-After` numérico si Kick lo envía, y se aplica backoff exponencial en cualquier caso. Los intervalos de sondeo por defecto (60 s base) son provisionales (AD-54, RISK-LIVE-02).
+
+### Tareas de FASE 5 — estado final
+4. ~~Polling adaptativo de `Livestreams` con backoff, agrupando favoritos en lotes de hasta 50~~ — **Hecho en FASE 10** (`KickBatchLiveStatusProvider` + `PollingLiveMonitor`). Validación contra la API real de Kick: PENDING (no alcanzable desde el sandbox).

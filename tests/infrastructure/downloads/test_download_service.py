@@ -143,6 +143,31 @@ async def test_resume_is_a_noop_unless_currently_paused():
     assert updated.status == DownloadStatus.DOWNLOADING  # unchanged, not re-saved as something odd
 
 
+async def test_resume_requeues_when_not_paused_in_this_session():
+    """The pause flag lives only in memory (JobControlStore); the PAUSED
+    status lives in the database. If the app restarted while a download
+    sat PAUSED, ``is_paused()`` comes back False even though the status
+    says otherwise — no worker is holding this download any more, so
+    resuming has to put it back on the queue itself, not just flip the
+    status and assume a worker is still waiting on it."""
+    downloads = InMemoryDownloadRepository()
+    download = _download(status=DownloadStatus.PAUSED)
+    await downloads.save(download)
+    queue = DownloadQueue()
+    service = DownloadService(
+        downloads=downloads,
+        progress=ProgressTracker(),
+        queue=queue,
+        coordinator=FakeCoordinator(),
+        control=JobControlStore(),  # nothing marked paused in this session
+    )
+
+    await service.resume(download.id)
+
+    assert queue.qsize() == 1
+    assert await queue.get() == download.id
+
+
 async def test_stop_delegates_to_coordinator():
     coordinator = FakeCoordinator()
     service = _service(coordinator=coordinator)

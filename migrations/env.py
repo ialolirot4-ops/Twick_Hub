@@ -4,6 +4,12 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from twick_hub.config.settings import load_config
+
+# FASE 8: importing this registers every ORM table on Base.metadata —
+# required before Alembic can autogenerate/compare against them. (Was
+# deliberately absent through FASE 1-7, per this module's own prior
+# comment: "no models exist yet — FASE 8 adds them.")
+from twick_hub.infrastructure.persistence import models  # noqa: F401,E402
 from twick_hub.infrastructure.persistence.base import Base
 
 # this is the Alembic Config object, which provides
@@ -15,9 +21,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Twick Hub: no models exist yet (FASE 8 adds them) — this wiring
-# only has to prove Alembic resolves our real config and metadata object
-# correctly, against an intentionally empty schema.
+# Twick Hub: FASE 8 adds the real schema (see infrastructure/persistence/
+# models.py) — target_metadata now reflects every table, not an
+# intentionally empty one (that was FASE 1's proof-of-wiring only).
 target_metadata = Base.metadata
 config.set_main_option("sqlalchemy.url", load_config().resolved_database_url())
 

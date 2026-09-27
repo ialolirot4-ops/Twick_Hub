@@ -1,0 +1,90 @@
+{
+  "startup": {
+    "first_run_seconds": 0.049545534999992924,
+    "subsequent_runs_seconds": [
+      0.009532132000003912,
+      0.01095721999999455,
+      0.012953003000006902,
+      0.00999749100000713
+    ],
+    "median_subsequent_seconds": 0.01047735550000084
+  },
+  "idle": {
+    "duration_seconds": 5.0,
+    "cpu_seconds_consumed": 0.0,
+    "cpu_percent_of_wallclock": 0.0,
+    "rss_bytes_min": 142995456,
+    "rss_bytes_max": 142995456
+  },
+  "download_1": {
+    "concurrency": 1,
+    "wall_seconds_total": 0.2896000679999986,
+    "per_job_wall_seconds": [
+      0.12139080500000432
+    ],
+    "per_job_cpu_seconds": [
+      0.040000000000000036
+    ],
+    "output_bytes_each": [
+      370360
+    ],
+    "rss_delta_bytes": 14086144
+  },
+  "download_4": {
+    "concurrency": 4,
+    "wall_seconds_total": 0.44887859600000013,
+    "per_job_wall_seconds": [
+      0.42019543099999623,
+      0.38362543600000265,
+      0.3610398229999987,
+      0.33524757700000407
+    ],
+    "per_job_cpu_seconds": [
+      0.10000000000000009,
+      0.07000000000000006,
+      0.040000000000000036,
+      0.010000000000000009
+    ],
+    "output_bytes_each": [
+      370360,
+      370360,
+      370360,
+      370360
+    ],
+    "rss_delta_bytes": 2953216
+  },
+  "ui_responsiveness": {
+    "expected_interval_ms": 50,
+    "ticks_recorded": 43,
+    "gap_ms_median": 50.04643399999509,
+    "gap_ms_max": 71.52830300000801,
+    "gap_ms_p95": 69.54358599999466
+  },
+  "kick_polling": {
+    "channel_count": 5,
+    "per_poll_overhead": {
+      "channels": 5,
+      "polls": 100,
+      "http_requests_per_poll": 1.0,
+      "ms_per_poll": 0.35,
+      "cpu_ms_per_poll": 0.4,
+      "rss_mb": 166.5,
+      "rss_delta_kb": 114.7
+    },
+    "adaptive_requests_per_hour_idle_channel": 23,
+    "naive_per_channel_polling_requests_per_hour_equivalent": 300.0
+  },
+  "twitch_eventsub_local": {
+    "wall_seconds": 8.002383920000014,
+    "cpu_seconds": 0.010000000000000009,
+    "cpu_percent_of_wallclock": 0.12496276234644829,
+    "rss_delta_bytes": 315392,
+    "note": "local ws:// server, not real wss://eventsub.wss.twitch.tv (no network to it here)"
+  },
+  "not_measured": {
+    "thumbnail_cache": "no thumbnail-cache code exists yet (RISK-UI-02) \u2014 nothing to run",
+    "visible_vs_minimized": "no code branches on window visibility yet (only a minimize_to_tray settings field exists) \u2014 would duplicate the same measurement",
+    "twitch_eventsub_real_network": "no network to twitch.tv from this sandbox",
+    "kick_live_requests_real_network": "no network to kick.com from this sandbox"
+  }
+}

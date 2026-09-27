@@ -196,3 +196,112 @@ async def test_clip_qualities_come_from_the_token_directly_no_manifest_fetch():
     source = await resolver.resolve(_clip_media(), "best")
     assert "sig=clipsig" in source.url
     assert "token=clipval" in source.url
+
+
+# FASE 18 — Testing: the cases above only exercise the "happy path" plus a
+# handful of error branches; the ones below close the remaining gaps found
+# by measuring coverage against the real test suite (docs/phase-state.md).
+
+
+async def test_unsupported_media_kind_raises_value_error():
+    """``MediaKind`` only has three real members (stream/video/clip) today,
+    so this defensive branch can't be reached through any value the enum
+    actually produces — but ``Media`` is a plain, unvalidated dataclass, so
+    a caller (or a future ``MediaKind`` member no adapter has been updated
+    for yet) really can hand the resolver something else. Confirms the
+    exhaustiveness guard itself, not a reachable-today user scenario.
+    """
+    ref = PlatformRef(platform=Platform.TWITCH, external_id="1")
+    bogus_media = Media(kind="unknown", ref=ref, title="x")  # type: ignore[arg-type]
+    resolver = _resolver(
+        lambda r: httpx.Response(200, json={}), lambda r: httpx.Response(200, text="")
+    )
+    with pytest.raises(ValueError, match="Unsupported media kind"):
+        await resolver.available_qualities(bogus_media)
+
+
+async def test_video_offline_raises():
+    def gql_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"videoPlaybackAccessToken": None}})
+
+    resolver = _resolver(gql_handler, lambda r: httpx.Response(200, text=""))
+    with pytest.raises(ChannelOfflineError):
+        await resolver.available_qualities(_video_media())
+
+
+async def test_video_forbidden_with_generic_reason_raises_playback_forbidden():
+    from twick_hub.infrastructure.twitch.playback.errors import PlaybackForbiddenError
+
+    def gql_handler(request: httpx.Request) -> httpx.Response:
+        token = _token_response(forbidden=True, reason="SOME_OTHER_REASON")
+        return httpx.Response(200, json={"data": {"videoPlaybackAccessToken": token}})
+
+    resolver = _resolver(gql_handler, lambda r: httpx.Response(200, text=_MANIFEST))
+    with pytest.raises(PlaybackForbiddenError, match="SOME_OTHER_REASON"):
+        await resolver.available_qualities(_video_media())
+
+
+async def test_clip_not_found_returns_no_variants_and_resolve_raises():
+    """``clip_data is None`` (line ``_clip_variants``'s ``return []``) and
+    ``_select_quality``'s own "no variants" guard are two different lines —
+    this single scenario is the only way to reach both together, since
+    every other path that could produce an empty variant list raises its
+    own, more specific ``offline_error`` first (``_fetch_manifest``)."""
+
+    def gql_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"clip": None}})
+
+    resolver = _resolver(gql_handler, lambda r: httpx.Response(200, text=""))
+
+    assert await resolver.available_qualities(_clip_media()) == []
+    with pytest.raises(_TwitchPlaybackError, match="No playable quality variants"):
+        await resolver.resolve(_clip_media(), "best")
+
+
+async def test_manifest_404_raises_offline_error():
+    def gql_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"data": {"streamPlaybackAccessToken": _token_response()}},
+                {"data": {"currentUser": {"hasTurbo": False}}},
+            ],
+        )
+
+    resolver = _resolver(gql_handler, lambda r: httpx.Response(404))
+    with pytest.raises(ChannelOfflineError):
+        await resolver.available_qualities(_stream_media())
+
+
+async def test_manifest_with_no_recognizable_variants_raises_offline_error():
+    def gql_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"data": {"streamPlaybackAccessToken": _token_response()}},
+                {"data": {"currentUser": {"hasTurbo": False}}},
+            ],
+        )
+
+    resolver = _resolver(gql_handler, lambda r: httpx.Response(200, text="#EXTM3U\n"))
+    with pytest.raises(ChannelOfflineError):
+        await resolver.available_qualities(_stream_media())
+
+
+async def test_resolve_by_exact_quality_name_returns_matching_variant():
+    """Distinct from ``resolve(..., \"best\")`` (short-circuits to the first
+    variant) and from the not-found case (falls through the whole loop) —
+    this is the loop actually finding its match on a middle/last variant."""
+
+    def gql_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"data": {"streamPlaybackAccessToken": _token_response()}},
+                {"data": {"currentUser": {"hasTurbo": False}}},
+            ],
+        )
+
+    resolver = _resolver(gql_handler, lambda r: httpx.Response(200, text=_MANIFEST))
+    source = await resolver.resolve(_stream_media(), "480p30")
+    assert source.quality_label == "480p30"

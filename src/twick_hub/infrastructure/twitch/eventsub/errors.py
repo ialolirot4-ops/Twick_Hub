@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from twick_hub.domain.errors import LiveMonitorCapacityError
+
 
 class EventSubError(Exception):
     """Base class for every error in this package."""
 
 
-class CapacityExceededError(EventSubError):
+class CapacityExceededError(EventSubError, LiveMonitorCapacityError):
     """Adding this channel would exceed the user token's cost budget
     (docs/risk-register.md RISK-TWITCH-01). Real, not a bug — see
     config.py's module docstring. Callers (FASE 10, Live Monitor) decide

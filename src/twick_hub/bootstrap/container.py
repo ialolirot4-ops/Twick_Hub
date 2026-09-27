@@ -23,6 +23,7 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import sessionmaker
 
 from twick_hub.config.settings import AppConfig
+from twick_hub.domain.protocols import FavoriteRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +31,12 @@ class Container:
     config: AppConfig
     engine: Engine
     session_factory: sessionmaker
+    favorites: FavoriteRepository
 
-    # FASE 3+ adds twitch_client, kick_client, download_service, and so
+    # FASE 10+ adds twitch_client, kick_client, download_service, and so
     # on here — each built in dependencies.py and added as a field,
-    # never reached through import-time global state.
+    # never reached through import-time global state. `favorites` (FASE
+    # 9) is the first real one — SqlFavoriteRepository only needs
+    # session_factory, already available; the platform adapters need
+    # real credentials/config this environment doesn't have (see
+    # docs/risk-register.md RISK-ARCH-01/03).

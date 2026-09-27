@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 
 from twick_hub.infrastructure.downloads.hls import HlsSegment
@@ -10,6 +11,7 @@ from twick_hub.infrastructure.downloads.progress_tracker import ProgressTracker
 from twick_hub.infrastructure.downloads.retry_policy import RetryPolicy
 from twick_hub.infrastructure.downloads.segment_manager import (
     DownloadCancelledError,
+    HttpxSegmentFetcher,
     SegmentDownloadError,
     SegmentManager,
 )
@@ -137,6 +139,34 @@ async def test_cancel_while_paused_raises_instead_of_hanging(tmp_path: Path):
         )
 
 
+async def test_cancel_detected_inside_the_pause_wait_loop_itself(tmp_path: Path):
+    """Distinct from the test above, where ``is_cancelled()`` is already
+    True on entry, so ``_download_one`` raises before ``_wait_while_paused``
+    is even called. Here cancellation only becomes true *while already
+    waiting inside the pause loop* — the only path that reaches
+    ``_wait_while_paused``'s own raise rather than ``_download_one``'s."""
+    segment = HlsSegment(sequence=0, url="https://cdn.example/seg0.ts", duration_seconds=10.0)
+    fetcher = FakeSegmentFetcher({segment.url: b"data"})
+    manager = _manager(fetcher, pause_poll_interval_seconds=0.001)
+
+    cancelled = False
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal cancelled
+        cancelled = True  # cancel while still "asleep" inside the pause loop
+
+    manager.sleep = fake_sleep
+
+    with pytest.raises(DownloadCancelledError):
+        await manager.download_all(
+            "job-1",
+            [segment],
+            tmp_path,
+            is_cancelled=lambda: cancelled,
+            is_paused=lambda: True,
+        )
+
+
 async def test_resume_skips_already_downloaded_segments(tmp_path: Path):
     segments = _segments(2)
     (tmp_path / "000000.ts").write_bytes(b"already-here")
@@ -187,3 +217,28 @@ async def test_concurrency_is_bounded(tmp_path: Path):
     await manager.download_all("job-1", segments, tmp_path)
 
     assert max_seen <= 2
+
+
+# FASE 18 — Testing: the real ``SegmentFetcher`` implementation —
+# every other test here uses ``FakeSegmentFetcher`` — had no coverage.
+
+
+async def test_httpx_segment_fetcher_returns_response_content():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"segment-bytes")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    fetcher = HttpxSegmentFetcher(client)
+
+    assert await fetcher.fetch("https://cdn.example/seg0.ts") == b"segment-bytes"
+
+
+async def test_httpx_segment_fetcher_raises_on_http_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    fetcher = HttpxSegmentFetcher(client)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await fetcher.fetch("https://cdn.example/seg0.ts")

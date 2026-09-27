@@ -102,8 +102,17 @@ class KickOAuthFlow:
         return self._tokens_from_response(response, "refresh the access token")
 
     async def revoke(self, token: str, *, token_hint_type: str = "access_token") -> None:
+        # FASE 17 hardening: the token travels in the POST body, not the
+        # URL's query string. A query-string secret is far more likely to
+        # end up somewhere it shouldn't — an httpx/urllib3 debug log line,
+        # a corporate TLS-terminating proxy's access log, `response.request.url`
+        # surfacing in an exception message someone later logs — than the
+        # same value inside a request body. RFC 7009 (OAuth 2.0 Token
+        # Revocation) itself specifies the token as a body parameter for
+        # exactly this reason; nothing about Kick's own docs requires the
+        # query-string form this used before.
         response = await self._http.post(
-            REVOKE_URL, params={"token": token, "token_hint_type": token_hint_type}
+            REVOKE_URL, data={"token": token, "token_hint_type": token_hint_type}
         )
         if response.status_code >= 400:
             raise KickAuthError(f"Failed to revoke token: {response.text}")

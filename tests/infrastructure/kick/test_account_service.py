@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import urllib.parse
 
 import httpx
 import pytest
@@ -97,7 +98,10 @@ async def test_disconnect_revokes_and_deletes():
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/oauth/revoke":
-            revoked.append(request.url.params["token"])
+            # FASE 17: the token travels in the POST body, not the URL —
+            # see KickOAuthFlow.revoke().
+            body = urllib.parse.parse_qs(request.content.decode())
+            revoked.append(body["token"][0])
             return httpx.Response(200)
         return httpx.Response(200, json=_USER_RESPONSE)
 
@@ -142,3 +146,17 @@ async def test_ensure_fresh_token_without_a_connection_raises():
     service = _service(lambda r: httpx.Response(200, json=_USER_RESPONSE))
     with pytest.raises(NotAuthenticatedError):
         await service.ensure_fresh_token()
+
+
+# FASE 18 — Testing: ``get_access_token`` (the synchronous accessor used by
+# ``KickAPIClient``'s ``access_token_getter``) had no coverage at all.
+
+
+def test_get_access_token_returns_the_stored_token_when_connected():
+    service = _service(lambda r: httpx.Response(200, json=_USER_RESPONSE), connected=True)
+    assert service.get_access_token() == "at1"
+
+
+def test_get_access_token_returns_none_when_never_connected():
+    service = _service(lambda r: httpx.Response(200, json=_USER_RESPONSE))
+    assert service.get_access_token() is None

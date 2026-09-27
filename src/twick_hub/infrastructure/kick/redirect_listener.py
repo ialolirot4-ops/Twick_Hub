@@ -51,9 +51,25 @@ class LocalHttpRedirectListener:
                 pass  # don't spam stderr with access logs for a one-shot local listener
 
         server = http.server.HTTPServer((self._host, self._port), _Handler)
-        thread = threading.Thread(target=server.handle_request, daemon=True)
+        # FASE 17 hardening: bound so a hung/slow client connecting to this
+        # one-shot local listener (accidentally or otherwise — it's open to
+        # any process that can reach ``self._host``:``self._port`` for the
+        # OAuth window's duration) can't keep ``handle_request`` blocked in
+        # a half-open ``accept``/``recv`` past our own ``timeout`` below,
+        # which would otherwise leave the background thread as an orphan
+        # after ``server_close()`` returns.
+        server.timeout = timeout
+        thread = threading.Thread(
+            target=server.handle_request, daemon=True, name="kick-oauth-redirect-listener"
+        )
         thread.start()
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         finally:
             server.server_close()
+            # Best-effort reap: the underlying select() is bounded by
+            # ``server.timeout`` above (and ``server_close()`` should wake
+            # it sooner on most platforms), so this join is short — never
+            # the unbounded wait it would have been against the old
+            # ``server.timeout is None`` default.
+            thread.join(timeout=max(timeout, 1.0))

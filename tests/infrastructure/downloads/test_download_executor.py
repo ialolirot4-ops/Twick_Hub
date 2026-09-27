@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+
+import pytest
 
 from tests.application.fakes import FakePlaybackResolver, InMemoryDownloadRepository
 from tests.infrastructure.downloads.test_segment_manager import FakeSegmentFetcher
@@ -326,3 +329,226 @@ async def test_paused_worker_blocks_then_completes_once_resumed(tmp_path: Path):
     final = await downloads.get(download.id)
     assert final is not None
     assert final.status == DownloadStatus.COMPLETED
+
+
+# --- FASE 11: DownloadFinished announcement ----------------------------------
+
+
+async def test_a_completed_download_announces_download_finished(tmp_path: Path):
+    from twick_hub.domain.events import DownloadFinished, EventBus
+
+    downloads = InMemoryDownloadRepository()
+    download = _download(tmp_path)
+    await downloads.save(download)
+    segments = [
+        HlsSegment(sequence=0, url="https://example.invalid/seg0.ts", duration_seconds=10.0)
+    ]
+    hls_reader = ScriptedHlsReader([segments])
+    bus = EventBus()
+    seen = []
+    bus.subscribe(seen.append)
+    executor = _executor(
+        tmp_path,
+        downloads=downloads,
+        hls_reader=hls_reader,
+        fetcher_map={segments[0].url: b"data"},
+    )
+    executor._event_bus = bus  # type: ignore[attr-defined]
+
+    await executor.run(download.id, is_cancelled=lambda: False, is_paused=lambda: False)
+
+    assert seen == [DownloadFinished(download.id, DownloadStatus.COMPLETED, None)]
+
+
+async def test_a_failed_download_announces_download_finished_with_the_error(tmp_path: Path):
+    from twick_hub.domain.events import EventBus
+
+    downloads = InMemoryDownloadRepository()
+    download = _download(tmp_path)
+    await downloads.save(download)
+    segment = HlsSegment(sequence=0, url="https://example.invalid/seg0.ts", duration_seconds=10.0)
+    hls_reader = ScriptedHlsReader([[segment]])
+    bus = EventBus()
+    seen = []
+    bus.subscribe(seen.append)
+    executor = _executor(
+        tmp_path,
+        downloads=downloads,
+        hls_reader=hls_reader,
+        fetcher_map={segment.url: [ConnectionError("down"), ConnectionError("still down")]},
+    )
+    executor._event_bus = bus  # type: ignore[attr-defined]
+
+    await executor.run(download.id, is_cancelled=lambda: False, is_paused=lambda: False)
+
+    assert len(seen) == 1
+    assert seen[0].download_id == download.id
+    assert seen[0].status == DownloadStatus.FAILED
+    assert seen[0].error_message is not None
+
+
+async def test_a_cancelled_download_announces_download_finished(tmp_path: Path):
+    from twick_hub.domain.events import DownloadFinished, EventBus
+
+    downloads = InMemoryDownloadRepository()
+    download = _download(tmp_path)
+    await downloads.save(download)
+    segments = [
+        HlsSegment(sequence=0, url="https://example.invalid/s0.ts", duration_seconds=10.0),
+        HlsSegment(sequence=1, url="https://example.invalid/s1.ts", duration_seconds=10.0),
+    ]
+    hls_reader = ScriptedHlsReader([[segments[0]], [segments[1]]])
+    bus = EventBus()
+    seen = []
+    bus.subscribe(seen.append)
+    executor = _executor(
+        tmp_path,
+        downloads=downloads,
+        hls_reader=hls_reader,
+        fetcher_map={s.url: b"data" for s in segments},
+    )
+    executor._event_bus = bus  # type: ignore[attr-defined]
+    calls = [0]
+
+    def is_cancelled() -> bool:
+        calls[0] += 1
+        return calls[0] > 1
+
+    await executor.run(download.id, is_cancelled=is_cancelled, is_paused=lambda: False)
+
+    assert seen == [DownloadFinished(download.id, DownloadStatus.CANCELLED, None)]
+
+
+async def test_no_event_bus_means_no_announcement_and_no_error(tmp_path: Path):
+    downloads = InMemoryDownloadRepository()
+    download = _download(tmp_path)
+    await downloads.save(download)
+    segments = [
+        HlsSegment(sequence=0, url="https://example.invalid/seg0.ts", duration_seconds=10.0)
+    ]
+    executor = _executor(
+        tmp_path,
+        downloads=downloads,
+        hls_reader=ScriptedHlsReader([segments]),
+        fetcher_map={segments[0].url: b"data"},
+    )
+
+    await executor.run(
+        download.id, is_cancelled=lambda: False, is_paused=lambda: False
+    )  # must not raise
+
+    final = await downloads.get(download.id)
+    assert final is not None and final.status == DownloadStatus.COMPLETED
+
+
+async def test_an_unexpected_exception_fails_the_download_announces_it_and_still_reraises(
+    tmp_path: Path,
+):
+    from twick_hub.domain.events import DownloadFinished, EventBus
+
+    downloads = InMemoryDownloadRepository()
+    download = _download(tmp_path)
+    await downloads.save(download)
+
+    class ExplodingHlsReader:
+        async def poll_until_complete(self, *args, **kwargs):
+            raise RuntimeError("totally unexpected")
+            yield []  # pragma: no cover - never reached, makes this an async generator
+
+    bus = EventBus()
+    seen = []
+    bus.subscribe(seen.append)
+    executor = _executor(
+        tmp_path,
+        downloads=downloads,
+        hls_reader=ExplodingHlsReader(),  # type: ignore[arg-type]
+    )
+    executor._event_bus = bus  # type: ignore[attr-defined]
+
+    with pytest.raises(RuntimeError, match="totally unexpected"):
+        await executor.run(download.id, is_cancelled=lambda: False, is_paused=lambda: False)
+
+    final = await downloads.get(download.id)
+    assert final is not None and final.status == DownloadStatus.FAILED
+    assert seen == [DownloadFinished(download.id, DownloadStatus.FAILED, final.error_message)]
+
+
+async def test_cancellation_during_run_is_not_treated_as_finished(tmp_path: Path):
+    """asyncio.CancelledError means the worker itself is being torn down
+    (app shutdown) — the download's status is left as-is for restart
+    recovery to handle, and no DownloadFinished is announced."""
+    from twick_hub.domain.events import EventBus
+
+    downloads = InMemoryDownloadRepository()
+    download = _download(tmp_path)
+    await downloads.save(download)
+
+    class HangingHlsReader:
+        async def poll_until_complete(self, *args, **kwargs):
+            await asyncio.sleep(3600)
+            yield []  # pragma: no cover
+
+    bus = EventBus()
+    seen = []
+    bus.subscribe(seen.append)
+    executor = _executor(
+        tmp_path,
+        downloads=downloads,
+        hls_reader=HangingHlsReader(),  # type: ignore[arg-type]
+    )
+    executor._event_bus = bus  # type: ignore[attr-defined]
+
+    task = asyncio.create_task(
+        executor.run(download.id, is_cancelled=lambda: False, is_paused=lambda: False)
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert seen == []
+
+
+async def test_segment_manager_cancellation_mid_batch_marks_cancelled(tmp_path: Path):
+    """Distinct from ``test_cancellation_mid_download_stops_the_pipeline``
+    above, where cancellation is caught by the HLS reader's own
+    ``should_stop`` check before any segment reaches ``SegmentManager`` at
+    all. Here the batch IS handed off, and cancellation only takes effect
+    once ``SegmentManager`` is already working through it — the
+    ``DownloadCancelledError`` it raises has to propagate out through
+    ``DownloadExecutor``'s own ``except DownloadCancelledError`` clause,
+    not either of ``_run``'s own pre-loop/post-loop ``is_cancelled()``
+    checks."""
+    downloads = InMemoryDownloadRepository()
+    download = _download(tmp_path)
+    await downloads.save(download)
+
+    segment = HlsSegment(sequence=0, url="https://example.invalid/seg0.ts", duration_seconds=10.0)
+    hls_reader = ScriptedHlsReader([[segment]])
+    executor = _executor(
+        tmp_path, downloads=downloads, hls_reader=hls_reader, fetcher_map={segment.url: b"data"}
+    )
+
+    calls = {"n": 0}
+
+    def is_cancelled() -> bool:
+        calls["n"] += 1
+        # False for _run's pre-loop check and the HLS reader's should_stop
+        # check; only true once SegmentManager itself asks.
+        return calls["n"] > 2
+
+    await executor.run(download.id, is_cancelled=is_cancelled, is_paused=lambda: False)
+
+    final = await downloads.get(download.id)
+    assert final is not None
+    assert final.status == DownloadStatus.CANCELLED
+
+
+async def test_fail_on_a_download_that_no_longer_exists_is_a_noop(tmp_path: Path):
+    """Guards against a download disappearing (e.g. deleted concurrently)
+    between the pipeline failing and ``_fail`` re-reading it to record the
+    error — must not raise trying to update something that's gone."""
+    downloads = InMemoryDownloadRepository()
+    executor = _executor(tmp_path, downloads=downloads, hls_reader=ScriptedHlsReader([]))
+
+    await executor._fail("does-not-exist", "some error")  # type: ignore[attr-defined]  # must not raise

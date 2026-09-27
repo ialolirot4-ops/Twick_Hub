@@ -7,10 +7,12 @@ docs/kick-audit.md for the source-by-source evidence.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import httpx
 
 from twick_hub.infrastructure.kick.config import API_BASE_URL
-from twick_hub.infrastructure.kick.errors import KickAPIError
+from twick_hub.infrastructure.kick.errors import KickAPIError, KickRateLimitedError
 
 
 class KickAPIClient:
@@ -40,6 +42,23 @@ class KickAPIClient:
         streams = data.get("data") or []
         return streams[0] if streams else None
 
+    async def get_livestreams(self, broadcaster_user_ids: Sequence[str]) -> list[dict]:
+        """Live streams among ``broadcaster_user_ids``. Kick's changelog
+        (KickDevDocs, 28/07/2025, "Allow multiple broadcaster_user_id
+        params on livestreams") means the wire format is the *same*
+        ``broadcaster_user_id`` key repeated, one per id — not a
+        comma-separated list, and not the ``broadcaster_user_ids`` name some
+        SDKs use for their own argument. Up to 50 per request (per the SDKs
+        that document it); callers chunk. Channels that aren't live are
+        simply absent from the result.
+        """
+        if not broadcaster_user_ids:
+            return []
+        data = await self._get(
+            "/livestreams", params={"broadcaster_user_id": list(broadcaster_user_ids)}
+        )
+        return data.get("data") or []
+
     async def search_categories(self, query: str) -> list[dict]:
         data = await self._get("/categories", params={"q": query})
         return data.get("data") or []
@@ -49,6 +68,24 @@ class KickAPIClient:
         response = await self._http.get(
             f"{API_BASE_URL}{path}", params=params, headers={"Authorization": f"Bearer {token}"}
         )
+        if response.status_code == 429:
+            raise KickRateLimitedError(
+                f"Kick API {path} returned 429: {response.text}",
+                retry_after=_retry_after_seconds(response),
+            )
         if response.status_code >= 400:
             raise KickAPIError(f"Kick API {path} returned {response.status_code}: {response.text}")
         return response.json()
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Numeric ``Retry-After`` only. The header may also be an HTTP-date;
+    nothing here relies on Kick sending either form, so an unparseable
+    value is reported as "not given" instead of guessed at."""
+    raw = response.headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return None

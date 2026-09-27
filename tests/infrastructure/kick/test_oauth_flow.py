@@ -125,10 +125,18 @@ async def test_refresh_returns_new_tokens():
     assert tokens.access_token == "at2"
 
 
-async def test_revoke_sends_token_as_query_param():
+async def test_revoke_sends_token_in_request_body_not_url():
+    """FASE 17 (security hardening): the token must never appear in the
+    request URL/query string — only in the POST body — so it can't end up
+    in an httpx/proxy access log or in ``str(exc)`` of a raised HTTP error.
+    """
+
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.params["token"] == "at1"
-        assert request.url.params["token_hint_type"] == "access_token"
+        assert "token=" not in str(request.url)
+        assert "at1" not in str(request.url)
+        body = request.content.decode()
+        assert "token=at1" in body
+        assert "token_hint_type=access_token" in body
         return httpx.Response(200)
 
     flow = _flow(handler, FakeRedirectListener("", ""))
@@ -157,3 +165,18 @@ async def test_introspect_inactive_or_error_response_reports_inactive():
     flow = _flow(lambda r: httpx.Response(401), FakeRedirectListener("", ""))
     result = await flow.introspect("expired-token")
     assert result.active is False
+
+
+# FASE 18 — Testing: a 2xx response missing a key ``_tokens_from_response``
+# expects (Kick changing its response shape, or a broken mock in a test)
+# must raise the same well-typed error as an HTTP failure, not a bare
+# ``KeyError`` the caller has no reason to expect.
+
+
+async def test_token_response_missing_an_expected_field_raises_kick_auth_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"access_token": "at1"})  # no refresh_token/expires_in
+
+    flow = _flow(handler, FakeRedirectListener("", ""))
+    with pytest.raises(KickAuthError, match="Unexpected token response shape"):
+        await flow.refresh("old-refresh")

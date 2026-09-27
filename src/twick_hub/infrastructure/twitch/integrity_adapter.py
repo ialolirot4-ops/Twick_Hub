@@ -53,6 +53,35 @@ class IntegrityToken:
         return time.time() < self.expires_at
 
 
+class _SettleOnce:
+    """FASE 17 hardening. ``_begin_capture`` has three independent, async,
+    Qt-signal-driven ways to finish (timeout, a blocked/late interceptor
+    signal, a finished network reply) that are not mutually exclusive by
+    construction: ``QTimer.stop()`` and ``QObject.deleteLater()`` do not
+    retroactively cancel a signal that has already been queued, so a slow
+    ``_on_intercepted`` can still fire after ``_on_timeout`` already
+    resolved the capture. Without a guard, that means a second, unwanted
+    outbound POST to ``INTEGRITY_URL`` carrying the user's OAuth token
+    (RISK-TWITCH-04 territory — race condition + duplicate event, exactly
+    what Master Plan FASE 17 calls out), and the caller's ``callback``
+    invoked twice. Plain, dependency-free, unit-testable without Qt."""
+
+    def __init__(self) -> None:
+        self._settled = False
+
+    def settle(self) -> bool:
+        """Returns ``True`` the first time it's called, ``False`` every
+        time after — callers must only act on a ``True`` result."""
+        if self._settled:
+            return False
+        self._settled = True
+        return True
+
+    @property
+    def is_settled(self) -> bool:
+        return self._settled
+
+
 class _IntegrityRequestInterceptor(QtWebEngineCore.QWebEngineUrlRequestInterceptor):
     """Blocks Twitch's own Integrity POST from actually going out, and
     reports the headers it would have sent."""
@@ -113,17 +142,33 @@ class IntegrityAdapter(QtCore.QObject):
         timeout_timer = QtCore.QTimer(self)
         timeout_timer.setSingleShot(True)
         timeout_timer.setInterval(_TIMEOUT_MS)
+        settle = _SettleOnce()
 
         def _cleanup() -> None:
             timeout_timer.stop()
+            # Disconnecting here (rather than relying on deleteLater, which
+            # only tears the objects down on a later pass of the event
+            # loop) means a signal already queued behind this one — e.g. a
+            # slow `_on_intercepted` racing a timeout that fired first —
+            # has no slot left to call into once it's delivered.
+            interceptor.intercepted.disconnect(_on_intercepted)
+            timeout_timer.timeout.disconnect(_on_timeout)
             page.deleteLater()
             profile.deleteLater()
 
         def _on_timeout() -> None:
+            if not settle.settle():
+                return
             _cleanup()
             callback(None)
 
         def _on_intercepted(headers: dict) -> None:
+            if settle.is_settled:
+                # Already timed out (or, in principle, already completed)
+                # by the time this queued signal was delivered — do not
+                # replay Twitch's Integrity request a second time with the
+                # user's token attached.
+                return
             timeout_timer.stop()
             user_token = self._get_user_token()
             if user_token:
@@ -138,6 +183,8 @@ class IntegrityAdapter(QtCore.QObject):
             reply = self._network.post(request, b"")
 
             def _on_reply_finished() -> None:
+                if not settle.settle():
+                    return
                 _cleanup()
                 if reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError:
                     callback(None)

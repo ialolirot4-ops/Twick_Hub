@@ -1,51 +1,31 @@
 PROJECT_NAME: Twick Hub
 MASTER_PLAN_VERSION: 3.0
-CURRENT_PHASE: FASE 7 — Download Engine
-PHASE_STATUS: PASS
-LAST_COMPLETED_PHASE: FASE 7 — Download Engine
-SOURCE_BASELINE: git commit 8760a14 ("Fase5") + FASE 6 changes (delivered separately) + FASE 7 changes delivered in this package — none of these are committed to git yet; the user's local git history should record them once applied
-PROJECT_VERSION: 0.1.0 (pyproject.toml, unchanged this phase)
-TEST_STATUS: 324/324 passed (257 pre-FASE-7 [239 baseline + 18 FASE 6] + 67 new in tests/infrastructure/downloads/)
-STATIC_ANALYSIS_STATUS: ruff check src/twick_hub tests — all checks passed; pyright src/twick_hub tests — 0 errors, 0 warnings, 0 informations. (Both scoped to exclude src/twitchlink_next/, the stale package tracked as RISK-BUILD-01 — unrelated to this phase.)
-RUNTIME_VALIDATION_STATUS: PARTIAL — AsyncioProcessRunner tested against real subprocesses (/usr/bin/true, /usr/bin/false, /usr/bin/sleep, a real Python one-liner for stderr capture), including a real timeout+kill and proof no shell is used. Everything else (HTTP segment fetching, real ffmpeg, real HLS manifests) tested against fakes only — no live Twitch/Kick network access or real ffmpeg binary available in this environment.
-PACKAGING_STATUS: PENDING — out of scope (FASE 19).
-KNOWN_BLOCKERS: none blocking FASE 7's own closure.
+CURRENT_PHASE: FASE 18 — Testing
+PHASE_STATUS: PASS. Se midió cobertura real con `pytest-cov` antes de escribir un solo test nuevo (línea base: 964/964 pasando, 96% sobre 5504 líneas) y se usó esa medición — no una suposición — para decidir dónde ampliar. Se añadieron 65 tests nuevos repartidos por todas las categorías que el Master Plan §55 pide para esta fase: Domain (`Version.__lt__`, `next_occurrence`, `EventBus.unsubscribe`), Auth/Twitch (`IntegrityAdapter` — cache y el puente asíncrono, ya que `_begin_capture` en sí sigue bloqueado por la misma falta de Chromium-sandboxeable-como-root que RISK-TWITCH-04 documentaba antes de esta fase —, `browser_cookie_import.py` — rutas por plataforma, ini malformado, y el flujo completo de `import_session_token` con un `selenium.webdriver.Firefox` simulado, algo que nunca se había probado más allá del guard de path-traversal), EventSub (`_RealWebSocketConnection`), Kick (`oauth_flow`, `token_store`, `account_service`), Playback (`TwitchPlaybackResolver` — 7 ramas de error/edge-case), HLS/Downloader/Queue (`hls.py`, `download_service.py::resume()`, `segment_manager.py` incl. `HttpxSegmentFetcher` real, `download_executor.py`), Scheduler (`recover()` sin intento previo, `RecordingUnavailableError`, `CancelledError` propagándose, fallo en el callback de demanda, timeout genuino de `_wait`), Migration — application (token ya expirado, fallo genérico en `_transform_and_write`) e infraestructura (`legacy_reader.py`, `legacy_locator.py`, `legacy_codec.py`), y Updater (`installer.py` — extracción parcial sin backup previo vía CRC-32 corrompido a propósito —, `manifest_source.py` — clave pública no-Ed25519, `published_at` inválido). Favorites, Notifications, Persistence, Search y FFmpeg ya estaban al 100% de cobertura desde fases anteriores y no necesitaron tests nuevos.
+LAST_COMPLETED_PHASE: FASE 18 — Testing
+SOURCE_BASELINE: Continuación en el mismo contenedor de trabajo tras el cierre de FASE 17 (Twick_Hub.zip, TwitchLink-3_5_6.zip y Twick_Hub_Master_Plan_v3.md subidos de nuevo, en una conversación nueva). Esta sesión también tuvo acceso real a PyPI (mismo patrón que FASE 16/17, AD-88).
+PROJECT_VERSION: 0.1.0 (sin cambios en pyproject.toml; ninguna dependencia nueva de producción — `pytest-cov` se instaló solo como herramienta de medición de esta fase, no como dependencia declarada del proyecto)
+TEST_STATUS: Instalado el proyecto real (`pip install -e ".[dev]"`) en un venv nuevo: SQLAlchemy 2.1.1, Alembic 1.20.0, pytest 9.1.1, PySide6 6.11.2, ruff 0.16.9, pyright 1.1.414 (mismas versiones que FASE 16/17 — mismo índice de PyPI). `pytest` completo final: **1029/1029 pasando** (964 heredados + 65 nuevos de esta fase). Cobertura final (`pytest-cov`): **98%** sobre 5503 líneas (subida desde 96% en la línea base de esta misma fase), con 124 líneas sin cubrir repartidas en 20 archivos — los huecos que quedan son deliberados y documentados, no descuidos: `main.py` (0%, punto de entrada — wiring/arranque de la app, no lógica propia), `integrity_adapter.py` (50% — el cuerpo de `_begin_capture` necesita un `QWebEngineProfile`/Chromium real, bloqueado por RISK-TWITCH-04 desde antes de esta fase), `domain/version.py` línea 50 (`_sort_key` — código muerto real, nunca invocado, ver RISK-TEST-01 nuevo), y un resto disperso de ramas defensivas/de bajo valor en `logging_setup.py`, `live_monitor/{service,hybrid_monitor,polling_monitor}.py`, `legacy_reader.py` (11 líneas restantes de 255, todas en la sección de historial de descargas), `playlists.py`, `auto_download.py`, `helix_streams.py`, `channel_directory.py` (twitch), `token_store.py` (twitch), `eventsub/{capacity,connection,provider}.py`, `playback/manifest.py`, `scheduling/destination.py`, y `qml_bridge/{theme,navigation}.py`. `alembic upgrade head` y `downgrade base` reales contra un SQLite fresco: limpios en ambos sentidos (sin cambios de esquema en esta fase). `ruff check .` sobre todo el proyecto: **8 errores, los 8 ya aceptados desde FASE 16** (E501 en DDL autogenerado de `migrations/versions/`) — **0 nuevos, 0 heredados sin cerrar** (RISK-LINT-01 cerrado en esta fase, ver KNOWN_RISKS). `pyright` sobre todo el proyecto (con `.venv` simlink al venv real de esta fase): **0 errores, 0 warnings, 0 informations**.
+STATIC_ANALYSIS_STATUS: PASS limpio — 0 hallazgos propios de `ruff`/`pyright`. Único resto: 8 `E501` en `migrations/versions/*.py`, aceptados explícitamente desde FASE 16 (no un hallazgo nuevo, no de esta fase).
+RUNTIME_VALIDATION_STATUS: `pytest`/`ruff`/`pyright`/`alembic` corridos de punta a punta, ver TEST_STATUS. Cada test nuevo se corrió y confirmó en verde módulo por módulo antes de pasar al siguiente, no solo en el barrido final. El truco de `HttpxSegmentFetcher`/CRC-32 corrompido a propósito en `test_installer.py` (para forzar un fallo real de extracción a mitad del archivo, sin backup previo) y el `selenium.webdriver.Firefox` simulado en `test_browser_cookie_import.py` se verificaron explícitamente contra la implementación real (no solo contra el fake) antes de darlos por buenos.
+KNOWN_BLOCKERS: ninguno para el cierre de FASE 18.
 KNOWN_RISKS:
-  - RISK-ARCH-02 (new) — EnqueueDownloadUseCase (FASE 3) still depends on a single global PlaybackResolver, not PlatformRegistry; low impact until Kick gets a PlaybackResolver.
-  - RISK-ARCH-03 (new) — download engine not wired into bootstrap/container.py.
-  - RISK-DATA-01 (new) — no locking/optimistic concurrency on Download record writes; racy pause-vs-transition writes possible in principle. Explicitly deferred to FASE 8 ("transactions").
-  - RISK-RESUME-01 (new) — no crash-recovery for PAUSED downloads; a finished live stream cannot be resumed after an app restart (inherent to HLS live capture, not a defect).
-  - RISK-UX-01 (new) — pausing a live capture doesn't stop polling its manifest (wasteful, not incorrect); deferred per "measure before optimizing" (§19).
-  - Carried over from FASE 6: RISK-BUILD-01, RISK-ARCH-01, RISK-UI-02.
-  - Carried over from FASE 0-5: RISK-TWITCH-01..04, RISK-SEC-01, RISK-KICK-01..03, RISK-UI-01, RISK-PKG-01, RISK-PROD-01..02.
-IMPORTANT_DECISIONS: AD-32 (DownloadStatus retroactive correction: PENDING→QUEUED, +PREPARING, +PROCESSING), AD-33 (progress total deferred/unknown by design, segments_completed_of() fallback), AD-34 (cancellation double-checked after the poll loop, closing a real partial-completion bug found during this phase's own testing), AD-35 (pause/resume: DownloadService owns visible status independently of where the blocked worker sits), AD-36 (Container/DI wiring deferred, same pattern as AD-31).
+  - Cerrados en FASE 18: RISK-LINT-01 (los 3 `I001` originales de FASE 17 + 2 más descubiertos al tocar esos archivos, todos corregidos con `ruff --fix`; ver su propia entrada para el detalle de qué quedó fuera — los 8 `E501` de `migrations/versions/`, ya aceptados desde FASE 16).
+  - Nuevos FASE 18, informativos: RISK-TEST-01 (`Version._sort_key` es código muerto, nunca invocado — hallado al medir cobertura, no corregido por estar fuera del mandato de Testing), RISK-BUILD-02 (el historial de `git` recibido para esta fase tiene solo 4 commits, ninguno posterior a FASE 7, muy por detrás del código real en disco — ver su propia entrada; el commit de cierre de esta fase documenta explícitamente que agrupa el catch-up).
+  - Heredados sin cambio: RISK-MIGRATION-01..05 (05 ya cerrado en FASE 16), RISK-SEC-01..02, RISK-DATA-02..03, RISK-ARCH-01..08, RISK-KICK-01..04, RISK-LIVE-01..06, RISK-TWITCH-01..04 (RISK-TWITCH-04 sigue PENDING de verificación end-to-end contra Chromium/red reales — el mismo límite de sandbox afectó a los tests nuevos de `integrity_adapter.py` de esta fase, que sólo pudieron cubrir la parte de Python puro), RISK-SCHED-01..04, RISK-PLAYLIST-01, RISK-PERF-01..04, RISK-CONCURRENCY-01, RISK-RESUME-01, RISK-UX-01, RISK-BUILD-01, RISK-UI-01..02, RISK-PKG-01, RISK-PROD-01..02.
+IMPORTANT_DECISIONS: Ninguna decisión arquitectónica nueva en esta fase (su mandato es Testing, no diseño) — el único cambio de código de producción fue el `ruff --fix` mecánico que cierra RISK-LINT-01 (reordenar imports + modernizar `X | Y`/`datetime.UTC`), sin cambio de comportamiento, confirmado por la suite completa en verde antes y después.
 FILES_CHANGED:
-  - src/twick_hub/domain/enums.py (DownloadStatus: 6→8 states, PENDING renamed to QUEUED)
-  - src/twick_hub/domain/downloads.py (default status updated to QUEUED)
-  - tests/application/test_downloads.py (assertion updated to QUEUED)
-  - src/twick_hub/infrastructure/downloads/__init__.py (new)
-  - src/twick_hub/infrastructure/downloads/hls.py (new — media-playlist parser + live poller)
-  - src/twick_hub/infrastructure/downloads/retry_policy.py (new)
-  - src/twick_hub/infrastructure/downloads/progress_tracker.py (new)
-  - src/twick_hub/infrastructure/downloads/segment_manager.py (new)
-  - src/twick_hub/infrastructure/downloads/ffmpeg_processor.py (new — real subprocess runner + fake-friendly Protocol)
-  - src/twick_hub/infrastructure/downloads/media_processor.py (new)
-  - src/twick_hub/infrastructure/downloads/download_executor.py (new — drives one Download through the full pipeline)
-  - src/twick_hub/infrastructure/downloads/download_queue.py (new)
-  - src/twick_hub/infrastructure/downloads/download_coordinator.py (new — bounded worker pool)
-  - src/twick_hub/infrastructure/downloads/download_service.py (new — concrete DownloadEngine + pause/resume)
-  - tests/infrastructure/downloads/__init__.py (new)
-  - tests/infrastructure/downloads/test_hls.py (new, 9 tests)
-  - tests/infrastructure/downloads/test_retry_and_progress.py (new, 11 tests)
-  - tests/infrastructure/downloads/test_segment_manager.py (new, 9 tests)
-  - tests/infrastructure/downloads/test_ffmpeg_processor.py (new, 10 tests)
-  - tests/infrastructure/downloads/test_download_queue.py (new, 3 tests)
-  - tests/infrastructure/downloads/test_download_coordinator.py (new, 6 tests)
-  - tests/infrastructure/downloads/test_download_service.py (new, 10 tests)
-  - tests/infrastructure/downloads/test_download_executor.py (new, 9 tests, full pipeline integration)
-  - docs/architecture-decisions.md (added AD-32 through AD-36)
-  - docs/risk-register.md (added RISK-ARCH-02, RISK-ARCH-03, RISK-DATA-01, RISK-RESUME-01, RISK-UX-01)
-  - docs/phase-state.md (this update)
-NEXT_PHASE: FASE 8 — Persistence
-NEXT_PHASE_PREREQUISITES: Per Master Plan §61's handoff index, FASE 8 needs "domain/download engine" as input — this phase (FASE 7) satisfies that. FASE 8's own text (§45) explicitly lists "transactions" among its deliverables, which is exactly where RISK-DATA-01 should be addressed. RISK-RESUME-01's "safe shutdown" angle is also FASE 8's own bullet list. No missing prerequisite blocks FASE 8 from starting.
-DATE_UTC: 2026-09-17
+  - tests/domain/test_version.py, tests/domain/test_monitoring_events.py, tests/domain/test_scheduling.py (Domain)
+  - tests/test_config.py (plataformas de `default_data_dir()` + `load_config()`)
+  - tests/infrastructure/twitch/test_integrity_adapter.py (nuevo), tests/infrastructure/twitch/test_browser_cookie_import.py, tests/infrastructure/twitch/eventsub/test_connection.py (nuevo) (Auth/Twitch)
+  - tests/infrastructure/kick/test_oauth_flow.py, test_token_store.py, test_account_service.py (Kick)
+  - tests/infrastructure/twitch/playback/test_playback_resolver.py (Playback)
+  - tests/infrastructure/downloads/test_hls.py, test_download_service.py, test_segment_manager.py, test_download_executor.py (HLS/Downloader/Queue)
+  - tests/application/scheduling/test_scheduler.py (Scheduler)
+  - tests/application/test_legacy_migration.py, tests/infrastructure/migration/test_legacy_reader.py, test_legacy_locator.py, test_legacy_codec.py (Migration)
+  - tests/infrastructure/updates/test_installer.py, test_manifest_source.py (Updater)
+  - src/twick_hub/infrastructure/persistence/mappers.py, src/twick_hub/infrastructure/migration/legacy_codec.py, migrations/env.py, migrations/versions/*.py (solo `ruff --fix` mecánico: imports reordenados + `X | Y`/`datetime.UTC` — sin cambio de comportamiento)
+  - docs/risk-register.md (RISK-LINT-01 cerrado; RISK-TEST-01, RISK-BUILD-02 nuevos), docs/phase-state.md (este archivo)
+NEXT_PHASE: FASE 19 — Packaging
+NEXT_PHASE_PREREQUISITES: Ninguno formal adicional al índice del Master Plan. Notas de continuidad: (1) RISK-BUILD-01 (`src/twitchlink_next/` obsoleto empaquetándose junto a `twick_hub`) el propio Master Plan §30 lo marca como bloqueante explícito antes de este empaquetado — FASE 19 debe resolverlo, no solo heredarlo; (2) FASE 19 decide Windows+macOS juntos vs. Windows primero (Master Plan §56); (3) RISK-BUILD-02 (historial de `git` desfasado) no bloquea el empaquetado en sí, pero conviene que FASE 19 empiece commiteando de forma disciplinada fase a fase de aquí en adelante; (4) RISK-TWITCH-04/RISK-SEC-04 (verificación end-to-end de `IntegrityAdapter` contra Chromium/red reales) sigue PENDING por la misma limitación de sandbox — no es un prerrequisito de FASE 19.
+DATE_UTC: 2026-09-27

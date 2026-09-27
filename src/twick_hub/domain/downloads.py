@@ -59,6 +59,7 @@ class DownloadJob:
     attempt_number: int = 1
     id: str = field(default_factory=lambda: uuid4().hex)
     started_at: datetime = field(default_factory=datetime.now)
+    priority: int = 0  # lower runs first; ties keep arrival order (FASE 11)
 
     def __post_init__(self) -> None:
         if self.attempt_number < 1:

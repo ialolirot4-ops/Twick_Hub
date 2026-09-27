@@ -12,7 +12,10 @@ from twick_hub.domain.collections import Favorite, Playlist, ScheduledDownload
 from twick_hub.domain.content import Clip, Stream, Video
 from twick_hub.domain.downloads import Download, DownloadJob
 from twick_hub.domain.identity import Channel, PlatformAccount, User
+from twick_hub.domain.migration import LegacyMigrationRun
 from twick_hub.domain.notifications import Notification
+from twick_hub.domain.settings import Settings
+from twick_hub.domain.updates import UpdateAttempt, UpdateInfo
 from twick_hub.domain.value_objects import Media, PlatformRef, PlaybackSource
 
 
@@ -132,8 +135,9 @@ class FakeDownloadEngine:
 class InMemoryFavoriteRepository:
     _items: dict[str, Favorite] = field(default_factory=dict)
 
-    async def list_all(self) -> list[Favorite]:
-        return list(self._items.values())
+    async def list_all(self, *, limit: int | None = None, offset: int = 0) -> list[Favorite]:
+        ordered = sorted(self._items.values(), key=lambda f: f.position)
+        return ordered[offset : offset + limit if limit is not None else None]
 
     async def get_by_channel(self, channel_ref: PlatformRef) -> Favorite | None:
         for favorite in self._items.values():
@@ -152,8 +156,8 @@ class InMemoryFavoriteRepository:
 class InMemoryDownloadRepository:
     _items: dict[str, Download] = field(default_factory=dict)
 
-    async def list_all(self) -> list[Download]:
-        return list(self._items.values())
+    async def list_all(self, *, limit: int | None = None, offset: int = 0) -> list[Download]:
+        return list(self._items.values())[offset : offset + limit if limit is not None else None]
 
     async def get(self, download_id: str) -> Download | None:
         return self._items.get(download_id)
@@ -161,13 +165,16 @@ class InMemoryDownloadRepository:
     async def save(self, download: Download) -> None:
         self._items[download.id] = download
 
+    async def list_by_status(self, statuses) -> list[Download]:
+        return [d for d in self._items.values() if d.status in set(statuses)]
+
 
 @dataclass
 class InMemoryPlaylistRepository:
     _items: dict[str, Playlist] = field(default_factory=dict)
 
-    async def list_all(self) -> list[Playlist]:
-        return list(self._items.values())
+    async def list_all(self, *, limit: int | None = None, offset: int = 0) -> list[Playlist]:
+        return list(self._items.values())[offset : offset + limit if limit is not None else None]
 
     async def get(self, playlist_id: str) -> Playlist | None:
         return self._items.get(playlist_id)
@@ -175,13 +182,19 @@ class InMemoryPlaylistRepository:
     async def save(self, playlist: Playlist) -> None:
         self._items[playlist.id] = playlist
 
+    async def delete(self, playlist_id: str) -> None:
+        self._items.pop(playlist_id, None)
+
 
 @dataclass
 class InMemoryScheduledDownloadRepository:
     _items: dict[str, ScheduledDownload] = field(default_factory=dict)
 
-    async def list_all(self) -> list[ScheduledDownload]:
-        return list(self._items.values())
+    async def list_all(
+        self, *, limit: int | None = None, offset: int = 0
+    ) -> list[ScheduledDownload]:
+        end = offset + limit if limit is not None else None
+        return list(self._items.values())[offset:end]
 
     async def save(self, scheduled: ScheduledDownload) -> None:
         self._items[scheduled.id] = scheduled
@@ -194,8 +207,9 @@ class InMemoryScheduledDownloadRepository:
 class InMemoryNotificationRepository:
     _items: dict[str, Notification] = field(default_factory=dict)
 
-    async def list_unread(self) -> list[Notification]:
-        return [n for n in self._items.values() if not n.is_read]
+    async def list_unread(self, *, limit: int | None = None, offset: int = 0) -> list[Notification]:
+        unread = [n for n in self._items.values() if not n.is_read]
+        return unread[offset : offset + limit if limit is not None else None]
 
     async def save(self, notification: Notification) -> None:
         self._items[notification.id] = notification
@@ -204,3 +218,84 @@ class InMemoryNotificationRepository:
         existing = self._items.get(notification_id)
         if existing is not None:
             self._items[notification_id] = replace(existing, is_read=True)
+
+
+@dataclass
+class InMemorySettingsRepository:
+    _current: Settings | None = None
+
+    async def get(self) -> Settings:
+        return self._current if self._current is not None else Settings()
+
+    async def save(self, settings: Settings) -> None:
+        self._current = settings
+
+
+@dataclass
+class InMemoryUpdateAttemptRepository:
+    _items: dict[str, UpdateAttempt] = field(default_factory=dict)
+
+    async def get(self, attempt_id: str) -> UpdateAttempt | None:
+        return self._items.get(attempt_id)
+
+    async def list_all(self, *, limit: int | None = None, offset: int = 0) -> list[UpdateAttempt]:
+        ordered = sorted(self._items.values(), key=lambda a: a.started_at, reverse=True)
+        return ordered[offset : offset + limit if limit is not None else None]
+
+    async def save(self, attempt: UpdateAttempt) -> None:
+        self._items[attempt.id] = attempt
+
+
+@dataclass
+class FakeUpdateSource:
+    info: UpdateInfo | None = None
+    error: Exception | None = None
+
+    async def check(self) -> UpdateInfo | None:
+        if self.error is not None:
+            raise self.error
+        return self.info
+
+
+@dataclass
+class InMemoryLegacyMigrationRunRepository:
+    _items: dict[str, LegacyMigrationRun] = field(default_factory=dict)
+
+    async def get(self, run_id: str) -> LegacyMigrationRun | None:
+        return self._items.get(run_id)
+
+    async def list_all(
+        self, *, limit: int | None = None, offset: int = 0
+    ) -> list[LegacyMigrationRun]:
+        ordered = sorted(self._items.values(), key=lambda r: r.started_at, reverse=True)
+        return ordered[offset : offset + limit if limit is not None else None]
+
+    async def find_by_source_hash(self, source_sha256: str) -> LegacyMigrationRun | None:
+        matches = [r for r in self._items.values() if r.source_sha256 == source_sha256]
+        if not matches:
+            return None
+        return max(matches, key=lambda r: r.started_at)
+
+    async def save(self, run: LegacyMigrationRun) -> None:
+        self._items[run.id] = run
+
+
+@dataclass
+class FakeSecretTokenStore:
+    """Matches ``domain.protocols.SecretTokenStore`` — a stand-in for
+    ``infrastructure.twitch.token_store.TwitchTokenStore`` that keeps
+    tokens in a plain dict instead of a real OS credential store."""
+
+    tokens: dict[str, str] = field(default_factory=dict)
+    fail_on_save: Exception | None = None
+
+    def save(self, key: str, token: str) -> None:
+        if self.fail_on_save is not None:
+            raise self.fail_on_save
+        self.tokens[key] = token
+
+    def load(self, key: str) -> str | None:
+        return self.tokens.get(key)
+
+    def delete(self, key: str) -> None:
+        self.tokens.pop(key, None)

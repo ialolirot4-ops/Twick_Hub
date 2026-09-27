@@ -21,6 +21,7 @@ from typing import Protocol, runtime_checkable
 from twick_hub.application.platform_registry import PlatformRegistry
 from twick_hub.domain.downloads import Download
 from twick_hub.domain.enums import DownloadStatus
+from twick_hub.domain.events import DownloadFinished, EventBus
 from twick_hub.domain.protocols import DownloadRepository
 from twick_hub.infrastructure.downloads.hls import HlsSegment
 from twick_hub.infrastructure.downloads.media_processor import MediaProcessor
@@ -48,6 +49,9 @@ class HlsReader(Protocol):
     ) -> AsyncIterator[list[HlsSegment]]: ...
 
 
+_TERMINAL = frozenset({DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED})
+
+
 class DownloadExecutor:
     def __init__(
         self,
@@ -60,6 +64,7 @@ class DownloadExecutor:
         *,
         poll_interval_seconds: float = 5.0,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._registry = registry
         self._downloads = downloads
@@ -69,8 +74,41 @@ class DownloadExecutor:
         self._work_dir = work_dir
         self._poll_interval_seconds = poll_interval_seconds
         self._sleep = sleep or asyncio.sleep
+        self._event_bus = event_bus
 
     async def run(
+        self,
+        download_id: str,
+        *,
+        is_cancelled: Callable[[], bool],
+        is_paused: Callable[[], bool],
+    ) -> None:
+        """Runs ``_run`` and, once the download is in a terminal state,
+        announces it (``DownloadFinished``). An unexpected exception fails
+        the download instead of leaving it stuck in DOWNLOADING forever (the
+        coordinator swallows it to keep its worker alive, so nothing else
+        would ever mark it) — then re-raises for the coordinator as before.
+        """
+        try:
+            await self._run(download_id, is_cancelled=is_cancelled, is_paused=is_paused)
+        except asyncio.CancelledError:
+            raise  # shutdown: the status stays as-is and restart recovery picks it up
+        except Exception as exc:
+            await self._fail(download_id, f"unexpected error: {exc}")
+            await self._announce_if_finished(download_id)
+            raise
+        await self._announce_if_finished(download_id)
+
+    async def _announce_if_finished(self, download_id: str) -> None:
+        if self._event_bus is None:
+            return
+        download = await self._downloads.get(download_id)
+        if download is not None and download.status in _TERMINAL:
+            await self._event_bus.publish(
+                DownloadFinished(download_id, download.status, download.error_message)
+            )
+
+    async def _run(
         self,
         download_id: str,
         *,

@@ -93,7 +93,7 @@ class DownloadService:
     async def enqueue(self, job: DownloadJob) -> None:
         self._control.forget(job.download_id)
         self._coordinator.start()  # idempotent — safe even if start() wasn't called explicitly
-        await self._queue.put(job.download_id)
+        await self._queue.put(job.download_id, priority=job.priority)
 
     async def cancel(self, job_id: str) -> None:
         self._control.cancel(job_id)
@@ -117,5 +117,12 @@ class DownloadService:
         download = await self._downloads.get(download_id)
         if download is None or download.status != DownloadStatus.PAUSED:
             return
+        # Not paused in *this* session means paused in a previous one (the
+        # pause flag lives in memory, the PAUSED status in the database): no
+        # worker owns it any more, so resuming must hand it to one — the
+        # executor re-reads the segments already on disk (RISK-RESUME-01).
+        paused_in_this_session = self._control.is_paused(download_id)
         self._control.resume(download_id)
         await self._downloads.save(replace(download, status=DownloadStatus.DOWNLOADING))
+        if not paused_in_this_session:
+            await self._queue.put(download_id)

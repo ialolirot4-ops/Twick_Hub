@@ -75,6 +75,14 @@ def test_parse_ignores_unrecognized_tags():
     assert len(segments) == 1
 
 
+def test_parse_skips_blank_lines_between_entries():
+    playlist = "#EXTM3U\n\n#EXTINF:5.0,\n\nseg.ts\n\n#EXT-X-ENDLIST\n"
+    segments, is_complete = parse_media_playlist(playlist, base_url="https://cdn.example/index.m3u8")
+    assert is_complete is True
+    assert len(segments) == 1
+    assert segments[0].url == "https://cdn.example/seg.ts"
+
+
 async def test_reader_read_fetches_and_parses():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=_VOD_PLAYLIST)

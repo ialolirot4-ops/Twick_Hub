@@ -7,6 +7,28 @@ def test_build_container_wires_everything(container: Container):
     assert container.engine is not None
     assert container.session_factory is not None
     assert container.config.app_name == "Twick Hub"
+    assert container.favorites is not None
+
+
+async def test_container_favorites_repository_is_real_and_working(container: Container):
+    """FASE 9: the first real (non-fake) repository wired into Container.
+    build_container() itself never runs migrations (that's a separate,
+    explicit step in real usage — see docs/architecture-decisions.md's
+    FASE 8 entry), so this test creates the schema directly, the same way
+    every other repository test in tests/infrastructure/persistence/
+    does, rather than assuming a schema that isn't there yet."""
+    from twick_hub.domain.collections import Favorite
+    from twick_hub.domain.enums import Platform
+    from twick_hub.domain.value_objects import PlatformRef
+    from twick_hub.infrastructure.persistence import models  # noqa: F401
+    from twick_hub.infrastructure.persistence.base import Base
+
+    Base.metadata.create_all(container.engine)
+    favorite = Favorite(channel_ref=PlatformRef(platform=Platform.TWITCH, external_id="c1"))
+
+    await container.favorites.save(favorite)
+
+    assert await container.favorites.get_by_channel(favorite.channel_ref) == favorite
 
 
 def test_build_container_creates_independent_instances(tmp_path):
