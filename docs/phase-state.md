@@ -1,7 +1,7 @@
 PROJECT_NAME: Twick Hub
 MASTER_PLAN_VERSION: 3.0
-CURRENT_PHASE: FASE 21c — credenciales/adapters reales de Twitch y Kick
-PHASE_STATUS: CERRADA — PASS, con alcance declarado. Adapters reales de Twitch y Kick cableados al `Container` y verificados en vivo en Windows 11: Kick 3/3, Twitch `twitch-channel` y `twitch-integrity`. **Sin verificar** (no es un fallo, no se probó): `twitch-account` y `twitch-playback` (el import de sesión solo soporta Firefox y el usuario no lo usa; ver RISK-TWITCH-05), `kick-disconnect` (revocación real) y Kick sin sesión iniciada.
+CURRENT_PHASE: FASE 22.0 — Higiene del repo (sobre la base funcional de FASE 21c)
+PHASE_STATUS: 22.0 PASS (ver sección al final; falta solo el commit del usuario). Base 21c, sin cambios: CERRADA — PASS, con alcance declarado. Adapters reales de Twitch y Kick cableados al `Container` y verificados en vivo en Windows 11: Kick 3/3, Twitch `twitch-channel` y `twitch-integrity`. **Sin verificar** (no es un fallo, no se probó): `twitch-account` y `twitch-playback` (el import de sesión solo soporta Firefox y el usuario no lo usa; ver RISK-TWITCH-05), `kick-disconnect` (revocación real) y Kick sin sesión iniciada.
 MATRIZ_REAL_VS_MOCK (sin cambio; 21c no toca QML):
   - REAL: Favorites, Downloads, History, y los dos contadores de Home.
   - MOCK: Search, Live, Account (21d); Home en "Live now" y "Recent activity"; Settings.
@@ -24,10 +24,10 @@ VERIFICACION_EN_VIVO (máquina del usuario: Windows 11, Python 3.12.10, PySide6 
   - PASS `twitch-integrity`: la página oculta de QtWebEngine capturó el token de Integrity y Twitch lo aceptó (30 videos listados). **Sin sesión de Twitch iniciada**: no dice nada sobre el caso con sesión. La consola de esa página imprime líneas `js:` (WebGPU, bluetooth): son mensajes del JavaScript de Twitch dentro de Chromium, inocuos, no errores del proyecto.
   - NO PROBADOS: `twitch-account`, `twitch-playback` (requieren Firefox con sesión de Twitch), `kick-disconnect`, Kick sin sesión.
 LIMITACION_DE_ENTORNO: el sandbox de desarrollo no tiene red a twitch.tv/kick.com ni Secret Service ni Windows; por eso lo de arriba se verificó en la máquina del usuario.
-LAST_COMPLETED_PHASE: 21c (PASS con alcance declarado). Antes: fix post-21e de Home (PASS), 21e checkpoint (PASS), 21b (AD-100/101), 21a (AD-98) + RISK-PKG-02 (AD-99). FASE 20 sigue BLOCKED.
-SOURCE_BASELINE: HEAD 9e96ad5 + cambios sin commitear de 21a, RISK-PKG-02, 21b, fix de Home y 21c.
+LAST_COMPLETED_PHASE: 22.0 (PASS, pendiente de commit). Antes: 21c (PASS con alcance declarado); antes de esa, fix post-21e de Home (PASS), 21e checkpoint (PASS), 21b (AD-100/101), 21a (AD-98) + RISK-PKG-02 (AD-99). FASE 20 sigue BLOCKED.
+SOURCE_BASELINE: HEAD 1313779 (commit "22": catch-up de 21a, RISK-PKG-02, 21b, fix de Home y 21c; sobre 9e96ad5) + el borrado de `benchmarks/{src,docs,tests,FASE21b.diff}` de 22.0.
 PROJECT_VERSION: 0.1.0 (sin cambios)
-TEST_STATUS: pytest 1074/1074 passed (1057 heredados + 17 nuevos). `ruff check src/twick_hub tests`: 0 errores. `pyright`: 0/0/0. El script de verificación pasa ruff y pyright, pero no lo ejecuta pytest.
+TEST_STATUS: pytest 1074/1074 passed (1057 heredados + 17 nuevos; reverificado en 22.0, venv nuevo, `QT_QPA_PLATFORM=offscreen`, antes y después del borrado). `ruff check src/twick_hub tests`: 0 errores. `pyright`: 0/0/0. El script de verificación pasa ruff y pyright, pero no lo ejecuta pytest.
 KNOWN_BLOCKERS:
   - Windows x64 real sigue sin poder producirse aquí — no es competencia de FASE 21.
 KNOWN_RISKS:
@@ -40,13 +40,17 @@ IMPORTANT_DECISIONS:
   - RISK-UI-03 NO se hizo en 21c: requiere tocar `AddFavoriteUseCase` o `FavoritesModel`; pendiente de confirmación del usuario.
   - Kick sin `TWICK_HUB_KICK_CLIENT_ID/SECRET` queda con adapters vacíos (no anuncia una cuenta que no puede conectar).
 FILES_CHANGED: ver los ZIP de entrega de 21c (FASE21c.zip, FASE21c_fix1.zip y el de cierre).
-NEXT_PHASE: 21d (Search/Live/Account + `live_monitor`). Requiere decidir antes: (1) RISK-UI-03; (2) cómo inicia sesión en Twitch un usuario sin Firefox (RISK-TWITCH-05); (3) RISK-ARCH-06 antes de permitir encolar desde la UI. Al auditar 21d, confirmar si el `live_monitor` de Twitch necesita credenciales de una app de `dev.twitch.tv`. 21f (Settings/Scheduled/Playlists, RISK-UI-05) sigue como decisión pendiente.
+NEXT_PHASE: 22.1 — Ciclo de vida y fin de las "mentiras" de la UI (RISK-ARCH-09, parte de RISK-UI-05, RISK-PKG-04). Sin decisiones pendientes. El resto de 21d/21f vive en 22.2–22.15 (`PLAN_FASE_22_HACIA_APP_FUNCIONAL.md`).
 NEXT_PHASE_PREREQUISITES:
-  (1) Decisión sobre RISK-UI-03. (2) Decisión sobre RISK-TWITCH-05. (3) RISK-ARCH-09.
+  22.1: ninguno. Decisiones del plan §1 que se necesitan más adelante: D1 (login de Twitch sin Firefox) antes de 22.2; D2 (nombre de canal en Favoritos) antes de 22.5; D3/D4/D5/D6 según sub-fase.
 DATE_UTC: 2026-09-28
 
 ---
-## FASE 22.0 — Higiene (en curso)
+## FASE 22.0 — Higiene — PASS (falta el commit del usuario)
 - FASE 22 (`PLAN_FASE_22_HACIA_APP_FUNCIONAL.md`) REEMPLAZA a `FASE_21_INTEGRACION_FINAL.md` en lo pendiente: 21d, 21e-final y 21f pasan a las sub-fases 22.2–22.15.
-- IDs de riesgo duplicados corregidos: ciclo de vida del motor → RISK-ARCH-09 (RISK-ARCH-06 sigue siendo "Settings sin conectar"); falta de `__main__.py` → RISK-PKG-04 (RISK-PKG-03 sigue siendo el tamaño del bundle).
-- Pendiente del usuario: borrar `benchmarks/{src,docs,tests,FASE21b.diff}` (verificado: las copias reales son más nuevas), correr pytest y commitear.
+- IDs de riesgo duplicados corregidos (verificado: `grep '^## RISK-' | uniq -d` vacío): ciclo de vida del motor → RISK-ARCH-09 (RISK-ARCH-06 sigue siendo "Settings sin conectar"); falta de `__main__.py` → RISK-PKG-04 (RISK-PKG-03 sigue siendo el tamaño del bundle).
+- Catch-up 21a–21c: ya commiteado como `1313779` ("22"). Ese commit arrastró por error las copias sueltas de `benchmarks/` (17 archivos).
+- Copias sueltas: verificado con `diff` que las de `docs/` y `tests/test_qml_bridge_data.py` reales son las más nuevas (las de `benchmarks/` no tienen AD-102, RISK-UI-04/05, RISK-PKG-04, RISK-TWITCH-05 ni `test_home_page_shows_real_favorites_and_downloads_counts`) y que las 11 de `src/` y `tests/test_qml_shell.py` son idénticas. Nada del repo (CI, spec de PyInstaller, tests) referencia esas rutas.
+- Aplicado en el sandbox: `git rm -r benchmarks/src benchmarks/docs benchmarks/tests benchmarks/FASE21b.diff` (17 archivos). `benchmarks/` queda con sus 4 archivos propios. pytest 1074 passed, `ruff check src/twick_hub tests` 0 errores, `pyright` 0/0/0, antes y después.
+- Pendiente del usuario: ejecutar ese `git rm` en su repo, aplicar este `docs/phase-state.md` y commitear (un commit para 22.0).
+- Observación para 22.1 (no es un fallo): al terminar la suite aparece `RuntimeError: Signal source has been deleted` en `qasync.close()` desde `BaseEventLoop.__del__`; es ruido de teardown de un loop qasync y posiblemente relacionado con el ciclo de vida que 22.1 aborda.
