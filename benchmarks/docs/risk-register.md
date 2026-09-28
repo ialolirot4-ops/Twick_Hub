@@ -34,7 +34,7 @@ Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 **Evidencia:** Herramientas de terceros para generar el token de integridad reportan que Twitch despliega actualizaciones de seguridad que invalidan generadores existentes de forma recurrente.
 **Impacto:** Mantenimiento continuo, no un costo de una sola vez.
 **Mitigación:** Aislar en `Infrastructure/Twitch/Integrity`, con manejo de error explícito si Integrity falla — nunca fallo silencioso.
-**Estado:** Aceptado, sin mitigación estructural posible más allá del aislamiento. Actualización FASE 21c: la captura de Integrity con QtWebEngine se verificó en vivo en Windows 11 (2026-09-28), sin sesión de Twitch: el token se capturó y Twitch lo aceptó para listar videos. No cubre el caso con sesión iniciada.
+**Estado:** Aceptado, sin mitigación estructural posible más allá del aislamiento.
 
 ## RISK-KICK-01 — VOD/Clips de Kick sin cobertura oficial confirmada
 **Severidad:** MEDIUM · **Evidencia/mitigación:** ver `kick-audit.md` y AD-05. **Estado:** decisión tomada; implementación en FASE 5.
@@ -50,7 +50,7 @@ Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 **Evidencia:** 49 archivos `Ui/*.py` + 28 `.ui` de Qt Designer en 3.5.5, todos QtWidgets — cero reutilizables como implementación bajo QML (AD-02).
 **Impacto:** FASE 2 es, en volumen, la fase de mayor superficie de reescritura de todo el proyecto.
 **Mitigación:** Preservar comportamiento/flujo documentado (no el código) al construir cada pantalla QML; usar `Ui/*.py` solo como referencia de UX.
-**Estado:** Aceptado, es el costo conocido de AD-02. FASE 21b: 3 de las 6 páginas con mock (Favorites, Downloads, History) pasaron a datos reales; quedan Search, Live y Account (21d). FASE 21e añade que Home también es mock (RISK-UI-04) y que Settings/Scheduled/Playlists no están conectadas (RISK-UI-05).
+**Estado:** Aceptado, es el costo conocido de AD-02. FASE 21b: 3 de las 6 páginas con mock (Favorites, Downloads, History) pasaron a datos reales; quedan Search, Live y Account (21d).
 
 ## RISK-PKG-01 — Selenium/Patchright + PyQt6-WebEngine en tamaño y estabilidad del paquete
 **Severidad:** MEDIUM
@@ -85,7 +85,6 @@ Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 **Impacto:** Ninguno todavía — FASE 6 no lo necesitaba. Sí bloquea a la primera fase que necesite un `PlatformRegistry` con datos reales corriendo dentro de la app (candidata: FASE 7 Download Engine o una fase de feature real, FASE 9+).
 **Mitigación:** Ensamblar `PlatformAdapters` reales en `bootstrap/dependencies.py` cuando esa fase lo requiera — requiere decidir ahí mismo cómo resolver las dependencias de cada adapter concreto (keyring, cliente HTTP, Integrity, etc.), no antes.
 **Estado:** ABIERTO — parcialmente avanzado en FASE 21a: `Container.platform_registry` ya existe y es un `PlatformRegistry` real (no un fake de test), pero registrado con `PlatformAdapters()` vacío para Twitch y Kick (ningún adapter real, cero credenciales) — decisión deliberada de 21a, ver bootstrap/dependencies.py. El riesgo real que esta entrada describe (adapters reales con keyring/HTTP/Integrity) sigue sin resolver y sigue siendo FASE 21c, no bloquea FASE 6/7 ni 21a en sí.
-**Actualización FASE 21c (parte offline):** PARCIALMENTE CERRADO. `bootstrap/platforms.py::build_platform_adapters()` arma los adapters reales de Twitch (account, channel_directory, live_stream_provider, video_provider, clip_provider, playback_resolver) y de Kick (account, channel_directory, live_stream_provider; sin video/clip/playback, ver AD-05), y `main()` los pasa a `build_container(platform_adapters=...)` (AD-102). Verificado con `httpx.MockTransport`; **Verificado en vivo** (Windows 11, 2026-09-28): Kick (OAuth + PKCE, refresh, búsqueda de canal) y Twitch (búsqueda de canal, captura de Integrity); la primera corrida encontró y se corrigió un bug de variables GQL (AD-102 (c)). **Sin verificar**: `twitch-account` y `twitch-playback` (requieren Firefox, ver RISK-TWITCH-05). El wiring que este riesgo describía queda CERRADO; lo que sigue abierto aquí es solo `live_monitor` (21d). Sigue abierto: `live_monitor` de Twitch y Kick (21d).
 
 ## RISK-UI-02 — `PlatformCapabilities` aún no llega a la UI (FASE 6)
 **Severidad:** LOW
@@ -258,7 +257,7 @@ Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 **Evidencia:** AD-75/76/77. `GetSettingsUseCase`/`UpdateSettingsUseCase`/`ResetSettingsUseCase` funcionan y están probados de punta a punta contra la base de datos real, pero ningún componente construido en fases anteriores lee `Settings` todavía: `DownloadCoordinator` sigue tomando `worker_count` como parámetro fijo del llamador (no de `settings.max_concurrent_downloads`), `RetryPolicy` de descargas se construye con sus propios valores por defecto (no `settings.retry_*`), `PollingConfig.base_interval` (FASE 10) no lee `settings.live_monitor_poll_interval_seconds`, y `DownloadExecutor.work_dir` no lee `settings.temp_directory`.
 **Impacto:** Ninguno hoy (sin UI conectada). Cambiar un valor en la futura pantalla de Settings no tendría ningún efecto real hasta que se cablee.
 **Mitigación:** Mismo tratamiento que RISK-ARCH-05 — la fase que cablee el `Container` real debe leer `Settings` al construir cada componente que hoy toma esos valores como parámetro fijo, en vez de asumir que existir en la base de datos alcanza.
-**Estado:** ABIERTO. Actualización 21c: el `httpx.AsyncClient` que crea `build_platform_adapters()` (compartido por Twitch y Kick) tampoco se cierra en el cierre; entra en el mismo arreglo de 21d.
+**Estado:** ABIERTO.
 
 ## RISK-ARCH-07 — El `DirectoryBackupInstaller` es un instalador provisional; el instalador real depende de una decisión de FASE 19 que no existe
 **Severidad:** MEDIUM — bloqueante para un release real, no para el desarrollo.
@@ -394,37 +393,8 @@ Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 **Mitigación:** cuando el historial real crezca, añadir `limit`/`offset` opcionales a `list_by_status` (retrocompatible) y paginar en `HistoryModel`. No optimizar sin medir (Master Plan §11).
 **Estado:** ABIERTO, informativo.
 
-## RISK-ARCH-09 — El ciclo de vida del motor de descargas no participa en el cierre de `Application` (FASE 21b)
+## RISK-ARCH-06 — El ciclo de vida del motor de descargas no participa en el cierre de `Application` (FASE 21b)
 **Severidad:** LOW hoy, MEDIUM en cuanto 21d permita encolar descargas desde la UI
 **Evidencia:** `Application._shutdown()` solo hace `engine.dispose()`. Nadie llama `DownloadService.stop()` ni `aclose()` del `httpx.AsyncClient` creado en `_build_download_service` (21a). El coordinador arranca de forma perezosa en el primer `enqueue`, y ninguna UI encola todavía, así que hoy no hay workers vivos al cerrar.
 **Mitigación:** en la sub-fase que conecte el primer `enqueue` desde la UI (21d), cerrar workers y cliente HTTP en el cierre, antes de `engine.dispose()`. La página Downloads tampoco ofrece pausar/reanudar (el mock nunca lo tuvo; `DownloadService.pause/resume` existen).
 **Estado:** ABIERTO.
-
-
-## RISK-UI-04 — `HomePage.qml` (página de inicio) sigue 100 % mock y contradice a las páginas reales (hallazgo FASE 21e)
-**Severidad:** MEDIUM al encontrarse; LOW para lo que queda abierto (ver Estado).
-**Evidencia:** captura real con BD sembrada (2 favoritos, 1 descarga activa): Home mostraba "Live now 2 / Downloads in progress 3 / Favorites 12" y "Recent activity" con northernlion/xqc/hasanabi, todos literales en `HomePage.qml` (`model: [ ... ]`). FASE_21_INTEGRACION_FINAL.md listaba 6 páginas mock y omitía Home, que es la página por defecto (`NavigationController._current_page_id = "home"`).
-**Impacto:** lo primero que veía el usuario eran números falsos que no coincidían con Favorites/Downloads, ya reales desde 21b. Con el fix de abajo, ese impacto queda acotado a "Live now" y "Recent activity" únicamente.
-**Mitigación:** IMPLEMENTADA (parcial) — `HomePage.qml` ahora llama `favoritesModel.refresh()`/`downloadsModel.refresh()` en `Component.onCompleted` (mismo patrón que Favorites/Downloads/History) y el grid de stats lee `String(favoritesModel.count)`/`String(downloadsModel.count)` en vez de los literales `"12"`/`"3"`. Cubierto por `tests/test_qml_bridge_data.py::test_home_page_shows_real_favorites_and_downloads_counts` (Container real, SQLite real, página real). Pendiente, sin tocar en este fix: "Live now" (sigue literal "2", depende de adapters Twitch/Kick — 21c/21d) y "Recent activity" (sigue literal, necesita decidir su origen real: historial de descargas vs. `notifications`).
-**Estado:** PARCIALMENTE MITIGADO — contadores de Favorites/Downloads cerrados; "Live now" y "Recent activity" quedan ABIERTOS bajo esta misma entrada, sin nuevo número de riesgo (mismo hallazgo, alcance reducido).
-
-## RISK-UI-05 — Settings, Scheduled y Playlists no están conectadas a sus casos de uso, ya construidos y testeados (hallazgo FASE 21e)
-**Severidad:** MEDIUM
-**Evidencia:** `SettingsPage.qml` con `property var sections` literal ("Mock only"); `ScheduledPage.qml`/`PlaylistsPage.qml` son `EmptyState` fijos cuyo botón dice "that's FASE 11/12" (ambas fases ya cerradas). `application/settings.py`, `scheduled_downloads.py` y `playlists.py` existen; `Container` no expone `settings`/`playlists` (RISK-ARCH-04) y no hay bridge.
-**Impacto:** la app no permite ni configurar, ni programar, ni crear listas; el texto de los toasts es obsoleto. FASE 21 no las contempla en ninguna sub-fase.
-**Mitigación:** decidir si entran como 21f o quedan fuera de FASE 21; no requieren red.
-**Estado:** ABIERTO — decisión del usuario.
-
-## RISK-PKG-04 — No existe `twick_hub/__main__.py`: `python -m twick_hub` falla (hallazgo FASE 21e)
-**Severidad:** LOW
-**Evidencia:** FASE_21_INTEGRACION_FINAL.md §21e menciona `python -m twick_hub`. Solo funcionan `python -m twick_hub.main` y el script `twick-hub` (`pyproject.toml`). Se usó `python -m twick_hub.main` en la verificación.
-**Mitigación:** añadir un `__main__.py` de 3 líneas si se quiere esa invocación; no hecho en 21e (verificación, no construcción).
-**Estado:** ABIERTO, informativo.
-
-## RISK-TWITCH-05 — El único login de Twitch soportado es importar la sesión de Firefox; sin Firefox no hay sesión ni playback (hallazgo FASE 21c)
-**Severidad:** MEDIUM
-**Evidencia:** `FirefoxCookieImporter` es la única implementación de `CookieImporter` (`browser_cookie_import.py`; el TwitchLink original tampoco tenía otra). `TwitchAccountService.connect()` falla con `NoBrowserSessionFoundError` sin un perfil de Firefox con sesión de Twitch. `TwitchPlaybackResolver._variants_for` exige un token de usuario (`NotAuthenticatedError`). El usuario del proyecto no usa Firefox, así que en su máquina no se pudo probar ni `twitch-account` ni `twitch-playback` (FASE 21c).
-**Impacto:** un usuario sin Firefox no puede conectar su cuenta de Twitch en Twick Hub y, con el código actual, no puede resolver playback (capturar streams, bajar VODs y clips de Twitch). Kick no se ve afectado (OAuth propio).
-**Mitigación (a decidir antes de 21d, no elegida todavía):** (a) instalar Firefox solo para iniciar sesión una vez — sin cambios de código, pero un requisito raro para un usuario; (b) un login dentro de la app con QtWebEngine (ya es dependencia y ya carga twitch.tv para Integrity), que capture la cookie de sesión — código nuevo con su propia verificación en vivo; (c) importar desde navegadores Chromium — descartable a priori: Chrome/Edge cifran las cookies con claves ligadas a la app en versiones recientes, y sería frágil. Hay que confirmar contra la documentación actual antes de apoyarse en (b) o (c).
-**Estado:** ABIERTO.
-

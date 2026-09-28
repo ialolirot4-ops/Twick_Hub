@@ -1,0 +1,1516 @@
+--- a/src/twick_hub/application/downloads.py
++++ b/src/twick_hub/application/downloads.py
+@@ -47,3 +47,41 @@
+             return
+         await self.engine.cancel(download_id)
+         await self.downloads.save(replace(download, status=DownloadStatus.CANCELLED))
++
++
++# Statuses a download can still leave (FASE 21b). ``PAUSED`` counts as
++# active: it is resumable, so the Downloads page keeps showing it.
++ACTIVE_DOWNLOAD_STATUSES: frozenset[DownloadStatus] = frozenset(
++    {
++        DownloadStatus.QUEUED,
++        DownloadStatus.PREPARING,
++        DownloadStatus.DOWNLOADING,
++        DownloadStatus.PROCESSING,
++        DownloadStatus.PAUSED,
++    }
++)
++FINISHED_DOWNLOAD_STATUSES: frozenset[DownloadStatus] = frozenset(
++    {DownloadStatus.COMPLETED, DownloadStatus.FAILED, DownloadStatus.CANCELLED}
++)
++
++
++@dataclass(frozen=True, slots=True)
++class ListActiveDownloadsUseCase:
++    """Downloads still in flight, oldest first (queue order)."""
++
++    downloads: DownloadRepository
++
++    async def execute(self) -> list[Download]:
++        active = await self.downloads.list_by_status(ACTIVE_DOWNLOAD_STATUSES)
++        return sorted(active, key=lambda d: d.created_at)
++
++
++@dataclass(frozen=True, slots=True)
++class ListDownloadHistoryUseCase:
++    """Finished downloads (completed, failed or cancelled), newest first."""
++
++    downloads: DownloadRepository
++
++    async def execute(self) -> list[Download]:
++        finished = await self.downloads.list_by_status(FINISHED_DOWNLOAD_STATUSES)
++        return sorted(finished, key=lambda d: d.completed_at or d.created_at, reverse=True)
+--- a/src/twick_hub/bootstrap/application.py
++++ b/src/twick_hub/bootstrap/application.py
+@@ -39,6 +39,8 @@
+ from twick_hub.presentation import (
+     qml_bridge,  # noqa: F401  (registers QML singletons on import)
+ )
++from twick_hub.presentation.qml_bridge.context import Bridges, install_bridges
++from twick_hub.presentation.qml_bridge.tasks import TaskRunner
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -53,6 +55,7 @@
+         self._container = container
+         self.qt_app = qt_app
+         self.qml_engine: QQmlApplicationEngine | None = None
++        self.bridges: Bridges | None = None  # keeps the QML data models alive
+ 
+     def run(self, *, on_started: Callable[[], None] | None = None) -> int:
+         """Loads the QML shell and blocks until the app quits.
+@@ -70,6 +73,11 @@
+         self.qt_app.aboutToQuit.connect(close_event.set)
+ 
+         self.qml_engine = QQmlApplicationEngine()
++        # FASE 21b: the data bridges must be on the root context *before*
++        # the QML loads, or the pages' bindings would hit undefined names.
++        self.bridges = install_bridges(
++            self.qml_engine, self._container, TaskRunner(loop.create_task)
++        )
+         self.qml_engine.load(QUrl.fromLocalFile(str(_QML_MAIN)))
+         if not self.qml_engine.rootObjects():
+             logger.error("QML failed to load from %s", _QML_MAIN)
+--- /dev/null
++++ b/src/twick_hub/presentation/qml_bridge/context.py
+@@ -0,0 +1,52 @@
++"""Attaches the data bridges to one QML engine (FASE 21b).
++
++Dependency injection for QML: each bridge is a plain Python object built
++from the ``Container``'s services and exposed to *that engine's* root
++context under a fixed name. No module-level state, no singleton — the
++same pattern as ``Application`` receiving its ``Container``: whoever
++builds the engine decides what it gets (AD-03). ``NavigationController``,
++``Theme`` and ``ToastController`` stay ``@QmlSingleton`` — they hold no
++application data, so they need no injection.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++from PySide6.QtQml import QQmlEngine
++
++from twick_hub.bootstrap.container import Container
++from twick_hub.presentation.qml_bridge.downloads_model import DownloadsModel
++from twick_hub.presentation.qml_bridge.favorites_model import FavoritesModel
++from twick_hub.presentation.qml_bridge.history_model import HistoryModel
++from twick_hub.presentation.qml_bridge.tasks import TaskRunner
++
++
++@dataclass(frozen=True, slots=True)
++class Bridges:
++    """References to the bridge objects. They are owned by the engine (Qt
++    parent); this just gives Python callers typed access."""
++
++    favorites: FavoritesModel
++    downloads: DownloadsModel
++    history: HistoryModel
++
++
++def install_bridges(engine: QQmlEngine, container: Container, runner: TaskRunner) -> Bridges:
++    # Parented to the engine so Qt destroys them *after* the engine has torn
++    # down the QML that binds to them — otherwise a page still alive at exit
++    # reads a deleted model and logs "Cannot read property of null".
++    bridges = Bridges(
++        favorites=FavoritesModel(
++            container.favorites, container.platform_registry, runner, parent=engine
++        ),
++        downloads=DownloadsModel(
++            container.downloads, container.download_service, runner, parent=engine
++        ),
++        history=HistoryModel(container.downloads, runner, parent=engine),
++    )
++    context = engine.rootContext()
++    context.setContextProperty("favoritesModel", bridges.favorites)
++    context.setContextProperty("downloadsModel", bridges.downloads)
++    context.setContextProperty("historyModel", bridges.history)
++    return bridges
+--- /dev/null
++++ b/src/twick_hub/presentation/qml_bridge/row_model.py
+@@ -0,0 +1,96 @@
++"""A small dict-row list model shared by the FASE 21b bridges.
++
++Each bridge (favorites, downloads, history) is a flat list of rows shown
++by one QML ``Repeater``. Rather than three near-identical
++``QAbstractListModel`` subclasses, they share this one: rows are plain
++dicts keyed by role name, and ``replace_rows`` diffs against the current
++rows so a progress tick emits ``dataChanged`` for the affected rows
++instead of resetting the whole list (which would rebuild every delegate
++once a second).
++
++Not registered with QML (``@QmlElement``): instances are created in
++Python, handed the ``Container``-derived dependencies explicitly, and
++attached to one engine's root context by ``qml_bridge/context.py`` — never
++through a module-level global (AD-03).
++"""
++
++from __future__ import annotations
++
++from typing import Any
++
++from PySide6.QtCore import (
++    Property,
++    QAbstractListModel,
++    QByteArray,
++    QModelIndex,
++    QObject,
++    Qt,
++    Signal,
++)
++
++Row = dict[str, Any]
++
++
++class RowListModel(QAbstractListModel):
++    countChanged = Signal()
++    loadedChanged = Signal()
++
++    def __init__(self, roles: tuple[str, ...], parent: QObject | None = None) -> None:
++        super().__init__(parent)
++        self._roles = roles
++        self._role_ids = {Qt.ItemDataRole.UserRole + 1 + i: name for i, name in enumerate(roles)}
++        self._rows: list[Row] = []
++        self._loaded = False
++
++    # --- QAbstractListModel ---------------------------------------------
++    def rowCount(self, parent: QModelIndex | None = None) -> int:  # noqa: N802 (Qt API)
++        if parent is not None and parent.isValid():
++            return 0
++        return len(self._rows)
++
++    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
++        if not index.isValid() or not 0 <= index.row() < len(self._rows):
++            return None
++        name = self._role_ids.get(role)
++        return self._rows[index.row()].get(name) if name is not None else None
++
++    def roleNames(self) -> dict[int, QByteArray]:  # noqa: N802 (Qt API)
++        return {role: QByteArray(name.encode()) for role, name in self._role_ids.items()}
++
++    # --- QML-facing state -------------------------------------------------
++    @Property(int, notify=countChanged)
++    def count(self) -> int:
++        return len(self._rows)
++
++    @Property(bool, notify=loadedChanged)
++    def loaded(self) -> bool:
++        """False until the first load finishes — lets a page show nothing
++        (instead of a flash of \"empty\") while the first query runs."""
++        return self._loaded
++
++    # --- Python-facing updates ---------------------------------------------
++    def rows(self) -> list[Row]:
++        return list(self._rows)
++
++    def replace_rows(self, new_rows: list[Row]) -> None:
++        if not self._loaded:
++            self._loaded = True
++            self.loadedChanged.emit()
++
++        same_shape = len(new_rows) == len(self._rows) and all(
++            old.get("id") == new.get("id") for old, new in zip(self._rows, new_rows, strict=True)
++        )
++        if same_shape:
++            for row_number, (old, new) in enumerate(zip(self._rows, new_rows, strict=True)):
++                if old != new:
++                    self._rows[row_number] = new
++                    index = self.index(row_number)
++                    self.dataChanged.emit(index, index)
++            return
++
++        previous_count = len(self._rows)
++        self.beginResetModel()
++        self._rows = list(new_rows)
++        self.endResetModel()
++        if previous_count != len(self._rows):
++            self.countChanged.emit()
+--- /dev/null
++++ b/src/twick_hub/presentation/qml_bridge/tasks.py
+@@ -0,0 +1,42 @@
++"""Schedules coroutines from QML-facing slots without blocking Qt.
++
++The QML bridges (``*_model.py``) are synchronous Qt objects that need to
++call async use cases. ``TaskRunner`` is the one place that turns "run this
++coroutine" into a task on the app's (qasync) event loop, keeps a strong
++reference until it finishes (asyncio only holds weak ones) and logs any
++exception instead of letting it vanish. The scheduling function is
++injected — ``Application`` passes ``loop.create_task``; tests pass
++whatever they need — so nothing here reaches for a global loop.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import logging
++from collections.abc import Callable, Coroutine
++from typing import Any
++
++logger = logging.getLogger(__name__)
++
++Spawn = Callable[[Coroutine[Any, Any, Any]], "asyncio.Future[Any] | asyncio.Task[Any] | None"]
++
++
++class TaskRunner:
++    def __init__(self, spawn: Spawn) -> None:
++        self._spawn = spawn
++        self._pending: set[asyncio.Future[Any]] = set()
++
++    def run(self, coro: Coroutine[Any, Any, Any]) -> None:
++        task = self._spawn(coro)
++        if task is None:  # a test spawner that consumed the coroutine itself
++            return
++        self._pending.add(task)
++        task.add_done_callback(self._finished)
++
++    def _finished(self, task: asyncio.Future[Any]) -> None:
++        self._pending.discard(task)
++        if task.cancelled():
++            return
++        error = task.exception()
++        if error is not None:
++            logger.error("Background UI task failed", exc_info=error)
+--- /dev/null
++++ b/src/twick_hub/presentation/qml_bridge/favorites_model.py
+@@ -0,0 +1,90 @@
++"""Favorites page bridge (FASE 21b): ``ListFavoritesUseCase`` +
++``GetFavoritesLiveStateUseCase`` over the real ``SqlFavoriteRepository``.
++
++Loading is two-phase on purpose. Phase 1 lists favorites straight from
++SQLite and shows them at once with ``liveState == "unknown"``. Phase 2
++asks the ``PlatformRegistry`` for live status and only then flips rows to
++``"live"``/``"offline"``. A platform with no live adapter (both, until
++FASE 21c) — or a live check that raises — leaves its rows ``"unknown"``:
++the page degrades, it never fails, and never claims \"offline\" for a
++channel nobody could check.
++"""
++
++from __future__ import annotations
++
++import logging
++
++from PySide6.QtCore import QObject, Slot
++
++from twick_hub.application.favorites import (
++    GetFavoritesLiveStateUseCase,
++    ListFavoritesUseCase,
++)
++from twick_hub.application.platform_registry import PlatformRegistry
++from twick_hub.domain.collections import Favorite
++from twick_hub.domain.protocols import FavoriteRepository
++from twick_hub.presentation.qml_bridge.row_model import Row, RowListModel
++from twick_hub.presentation.qml_bridge.tasks import TaskRunner
++
++logger = logging.getLogger(__name__)
++
++LIVE = "live"
++OFFLINE = "offline"
++UNKNOWN = "unknown"
++
++
++def _row(favorite: Favorite, live_state: str) -> Row:
++    return {
++        "id": favorite.id,
++        # Favorites persist only a channel_ref (no display name — the channel
++        # cache isn't populated until 21c/21d), so the platform's own id is
++        # the honest label for now.
++        "channelName": favorite.channel_ref.external_id,
++        "platform": favorite.channel_ref.platform.value,
++        "liveState": live_state,
++    }
++
++
++class FavoritesModel(RowListModel):
++    ROLES = ("id", "channelName", "platform", "liveState")
++
++    def __init__(
++        self,
++        favorites: FavoriteRepository,
++        registry: PlatformRegistry,
++        runner: TaskRunner,
++        parent: QObject | None = None,
++    ) -> None:
++        super().__init__(self.ROLES, parent)
++        self._list = ListFavoritesUseCase(favorites)
++        self._live_state = GetFavoritesLiveStateUseCase(favorites, registry)
++        self._registry = registry
++        self._runner = runner
++
++    @Slot()
++    def refresh(self) -> None:
++        self._runner.run(self.reload())
++
++    async def reload(self) -> None:
++        favorites = await self._list.execute()
++        self.replace_rows([_row(f, UNKNOWN) for f in favorites])
++        if not any(self._can_check_live(f) for f in favorites):
++            return
++        try:
++            states = await self._live_state.execute()
++        except Exception:
++            logger.warning("Live-state check failed; showing favorites as unknown", exc_info=True)
++            return
++        self.replace_rows([_row(s.favorite, self._state_of(s.favorite, s.is_live)) for s in states])
++
++    def _can_check_live(self, favorite: Favorite) -> bool:
++        platform = favorite.channel_ref.platform
++        return (
++            self._registry.is_registered(platform)
++            and self._registry.capabilities_for(platform).has_live
++        )
++
++    def _state_of(self, favorite: Favorite, is_live: bool) -> str:
++        if not self._can_check_live(favorite):
++            return UNKNOWN
++        return LIVE if is_live else OFFLINE
+--- /dev/null
++++ b/src/twick_hub/presentation/qml_bridge/downloads_model.py
+@@ -0,0 +1,89 @@
++"""Downloads page bridge (FASE 21b): in-flight downloads from the real
++``SqlDownloadRepository``, with live progress read from the download
++engine.
++
++Progress isn't persisted while a download runs (the executor writes
++``progress_percent`` only on completion), so the live number comes from
++``DownloadEngine.progress_of`` — an in-memory lookup. The QML page runs a
++1 Hz ``Timer`` calling ``refresh()`` only while it is visible *and*
++``hasActive`` is true; nothing polls at idle or on other pages.
++"""
++
++from __future__ import annotations
++
++import logging
++
++from PySide6.QtCore import Property, QObject, Signal, Slot
++
++from twick_hub.application.downloads import CancelDownloadUseCase, ListActiveDownloadsUseCase
++from twick_hub.domain.downloads import Download
++from twick_hub.domain.enums import DownloadStatus, MediaKind
++from twick_hub.domain.protocols import DownloadEngine, DownloadRepository
++from twick_hub.presentation.qml_bridge.row_model import Row, RowListModel
++from twick_hub.presentation.qml_bridge.tasks import TaskRunner
++
++logger = logging.getLogger(__name__)
++
++_STATUS_LABELS = {
++    DownloadStatus.QUEUED: "Queued",
++    DownloadStatus.PREPARING: "Preparing",
++    DownloadStatus.DOWNLOADING: "Downloading",
++    DownloadStatus.PROCESSING: "Processing",
++    DownloadStatus.PAUSED: "Paused",
++}
++
++
++class DownloadsModel(RowListModel):
++    ROLES = ("id", "title", "platform", "progress", "progressKnown", "statusLabel")
++
++    hasActiveChanged = Signal()
++
++    def __init__(
++        self,
++        downloads: DownloadRepository,
++        engine: DownloadEngine,
++        runner: TaskRunner,
++        parent: QObject | None = None,
++    ) -> None:
++        super().__init__(self.ROLES, parent)
++        self._list = ListActiveDownloadsUseCase(downloads)
++        self._cancel = CancelDownloadUseCase(downloads, engine)
++        self._engine = engine
++        self._runner = runner
++
++    @Property(bool, notify=hasActiveChanged)
++    def hasActive(self) -> bool:  # noqa: N802 (Qt property)
++        return self.rowCount() > 0
++
++    @Slot()
++    def refresh(self) -> None:
++        self._runner.run(self.reload())
++
++    @Slot(str)
++    def cancel(self, download_id: str) -> None:
++        self._runner.run(self._cancel_then_reload(download_id))
++
++    async def _cancel_then_reload(self, download_id: str) -> None:
++        await self._cancel.execute(download_id)
++        await self.reload()
++
++    async def reload(self) -> None:
++        downloads = await self._list.execute()
++        rows = [await self._row(d) for d in downloads]
++        had_active = self.rowCount() > 0
++        self.replace_rows(rows)
++        if had_active != (self.rowCount() > 0):
++            self.hasActiveChanged.emit()
++
++    async def _row(self, download: Download) -> Row:
++        live_percent = await self._engine.progress_of(download.id)
++        percent = max(download.progress_percent, live_percent)
++        return {
++            "id": download.id,
++            "title": download.media.title,
++            "platform": download.media.ref.platform.value,
++            "progress": percent / 100.0,
++            # A live capture has no known total: a "0%" bar would mislead.
++            "progressKnown": download.media.kind is not MediaKind.STREAM,
++            "statusLabel": _STATUS_LABELS.get(download.status, download.status.value),
++        }
+--- /dev/null
++++ b/src/twick_hub/presentation/qml_bridge/history_model.py
+@@ -0,0 +1,84 @@
++"""History page bridge (FASE 21b): finished downloads (completed, failed,
++cancelled) from the real ``SqlDownloadRepository``, newest first.
++``openFolder`` reveals a download's directory through an injectable opener
++so tests never launch a real file manager.
++"""
++
++from __future__ import annotations
++
++from collections.abc import Callable
++from pathlib import Path
++
++from PySide6.QtCore import QObject, QUrl, Slot
++from PySide6.QtGui import QDesktopServices
++
++from twick_hub.application.downloads import ListDownloadHistoryUseCase
++from twick_hub.domain.downloads import Download
++from twick_hub.domain.enums import DownloadStatus
++from twick_hub.domain.protocols import DownloadRepository
++from twick_hub.presentation.qml_bridge.row_model import Row, RowListModel
++from twick_hub.presentation.qml_bridge.tasks import TaskRunner
++
++
++def _open_with_desktop(folder: Path) -> bool:
++    return QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
++
++
++def format_size(size_bytes: int | None) -> str:
++    if size_bytes is None:
++        return "—"
++    size = float(size_bytes)
++    for unit in ("B", "KB", "MB", "GB"):
++        if size < 1024 or unit == "GB":
++            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
++        size /= 1024
++    return f"{size:.1f} GB"  # unreachable; keeps the type checker satisfied
++
++
++def _row(download: Download) -> Row:
++    when = download.completed_at or download.created_at
++    finished_ok = download.status is DownloadStatus.COMPLETED
++    return {
++        "id": download.id,
++        "title": download.media.title,
++        "platform": download.media.ref.platform.value,
++        "date": f"{when:%b} {when.day}, {when.year}",
++        "size": format_size(download.file_size_bytes) if finished_ok else "",
++        # Only non-success outcomes get a label; a completed row shows its size.
++        "outcome": "" if finished_ok else download.status.value.capitalize(),
++        "errorMessage": download.error_message or "",
++    }
++
++
++class HistoryModel(RowListModel):
++    ROLES = ("id", "title", "platform", "date", "size", "outcome", "errorMessage")
++
++    def __init__(
++        self,
++        downloads: DownloadRepository,
++        runner: TaskRunner,
++        opener: Callable[[Path], bool] = _open_with_desktop,
++        parent: QObject | None = None,
++    ) -> None:
++        super().__init__(self.ROLES, parent)
++        self._list = ListDownloadHistoryUseCase(downloads)
++        self._runner = runner
++        self._opener = opener
++        self._destinations: dict[str, str] = {}
++
++    @Slot()
++    def refresh(self) -> None:
++        self._runner.run(self.reload())
++
++    async def reload(self) -> None:
++        downloads = await self._list.execute()
++        self._destinations = {d.id: d.destination_path for d in downloads}
++        self.replace_rows([_row(d) for d in downloads])
++
++    @Slot(str, result=bool)
++    def openFolder(self, download_id: str) -> bool:  # noqa: N802 (Qt slot)
++        destination = self._destinations.get(download_id)
++        if destination is None:
++            return False
++        folder = Path(destination).parent
++        return folder.is_dir() and self._opener(folder)
+--- a/src/twick_hub/presentation/qml/pages/FavoritesPage.qml
++++ b/src/twick_hub/presentation/qml/pages/FavoritesPage.qml
+@@ -4,58 +4,70 @@
+ import TwickHub 1.0
+ import "../components"
+ 
+-ScrollView {
++// FASE 21b: rows come from `favoritesModel` (qml_bridge/favorites_model.py,
++// attached to the engine's root context by qml_bridge/context.py).
++Item {
+     id: root
+-    contentWidth: availableWidth
+ 
+-    property var mockFavorites: [
+-        { name: "northernlion", platform: "twitch", live: true },
+-        { name: "hasanabi", platform: "twitch", live: false },
+-        { name: "xqc", platform: "kick", live: true },
+-        { name: "adin", platform: "kick", live: false },
+-        { name: "pokimane", platform: "twitch", live: false }
+-    ]
+-
+-    GridLayout {
+-        width: root.availableWidth
+-        columns: Math.max(1, Math.floor(width / 220))
+-        columnSpacing: Theme.spacingMd
+-        rowSpacing: Theme.spacingMd
+-        Layout.margins: Theme.spacingLg
+-
+-        Repeater {
+-            model: root.mockFavorites
+-            delegate: SectionCard {
+-                Layout.fillWidth: true
+-                Layout.preferredHeight: 92
+-
+-                ColumnLayout {
+-                    anchors.fill: parent
+-                    spacing: Theme.spacingXs
++    Component.onCompleted: favoritesModel.refresh()
+ 
+-                    RowLayout {
+-                        Layout.fillWidth: true
+-                        Text {
+-                            text: modelData.name
+-                            color: Theme.textPrimary
+-                            font.pixelSize: Theme.fontSizeBody
+-                            font.bold: true
++    EmptyState {
++        anchors.fill: parent
++        visible: favoritesModel.loaded && favoritesModel.count === 0
++        title: "No favorites yet"
++        description: "Channels you add as favorites show up here, with their live status."
++        actionLabel: "Find a channel"
++        onActionRequested: NavigationController.navigate("search")
++    }
++
++    ScrollView {
++        id: scroll
++        anchors.fill: parent
++        visible: favoritesModel.count > 0
++        contentWidth: availableWidth
++
++        GridLayout {
++            width: scroll.availableWidth
++            columns: Math.max(1, Math.floor(width / 220))
++            columnSpacing: Theme.spacingMd
++            rowSpacing: Theme.spacingMd
++            Layout.margins: Theme.spacingLg
++
++            Repeater {
++                model: favoritesModel
++                delegate: SectionCard {
++                    Layout.fillWidth: true
++                    Layout.preferredHeight: 92
++
++                    ColumnLayout {
++                        anchors.fill: parent
++                        spacing: Theme.spacingXs
++
++                        RowLayout {
+                             Layout.fillWidth: true
+-                            elide: Text.ElideRight
+-                        }
+-                        Rectangle {
+-                            visible: modelData.live
+-                            width: 8; height: 8; radius: 4
+-                            color: Theme.success
++                            Text {
++                                text: model.channelName
++                                color: Theme.textPrimary
++                                font.pixelSize: Theme.fontSizeBody
++                                font.bold: true
++                                Layout.fillWidth: true
++                                elide: Text.ElideRight
++                            }
++                            Rectangle {
++                                visible: model.liveState === "live"
++                                width: 8; height: 8; radius: 4
++                                color: Theme.success
++                            }
+                         }
+-                    }
+ 
+-                    PlatformBadge { platform: modelData.platform }
++                        PlatformBadge { platform: model.platform }
+ 
+-                    Text {
+-                        text: modelData.live ? "Live now" : "Offline"
+-                        color: modelData.live ? Theme.success : Theme.textSecondary
+-                        font.pixelSize: Theme.fontSizeCaption
++                        Text {
++                            text: model.liveState === "live" ? "Live now"
++                                : model.liveState === "offline" ? "Offline" : "Status unknown"
++                            color: model.liveState === "live" ? Theme.success : Theme.textSecondary
++                            font.pixelSize: Theme.fontSizeCaption
++                        }
+                     }
+                 }
+             }
+--- a/src/twick_hub/presentation/qml/pages/DownloadsPage.qml
++++ b/src/twick_hub/presentation/qml/pages/DownloadsPage.qml
+@@ -4,84 +4,114 @@
+ import TwickHub 1.0
+ import "../components"
+ 
+-ScrollView {
++// FASE 21b: rows come from `downloadsModel` (qml_bridge/downloads_model.py).
++// Live progress is not persisted while a download runs, so the page asks
++// for a refresh once a second — only while it is on screen AND something
++// is still in flight. No timer ticks at idle or on other pages.
++Item {
+     id: root
+-    contentWidth: availableWidth
+ 
+-    property var mockDownloads: [
+-        { name: "northernlion — VOD part 12", platform: "twitch", progress: 0.62 },
+-        { name: "xqc — full stream", platform: "kick", progress: 0.18 },
+-        { name: "hasanabi — clip compilation", platform: "twitch", progress: 0.91 }
+-    ]
+-
+-    ColumnLayout {
+-        width: root.availableWidth
+-        spacing: Theme.spacingSm
+-
+-        Repeater {
+-            model: root.mockDownloads
+-            delegate: SectionCard {
+-                Layout.fillWidth: true
+-                Layout.margins: Theme.spacingLg
+-                Layout.bottomMargin: 0
+-                Layout.preferredHeight: 76
+-
+-                ColumnLayout {
+-                    anchors.fill: parent
+-                    spacing: Theme.spacingXs
+-
+-                    RowLayout {
+-                        Layout.fillWidth: true
+-                        spacing: Theme.spacingSm
+-                        PlatformBadge { platform: modelData.platform }
+-                        Text {
+-                            text: modelData.name
+-                            color: Theme.textPrimary
+-                            font.pixelSize: Theme.fontSizeBody
++    Component.onCompleted: downloadsModel.refresh()
++
++    Timer {
++        interval: 1000
++        repeat: true
++        running: root.visible && downloadsModel.hasActive
++        onTriggered: downloadsModel.refresh()
++    }
++
++    EmptyState {
++        anchors.fill: parent
++        visible: downloadsModel.loaded && downloadsModel.count === 0
++        title: "No active downloads"
++        description: "Downloads you start appear here while they run. Finished ones move to History."
++        actionLabel: "Find something to download"
++        onActionRequested: NavigationController.navigate("search")
++    }
++
++    ScrollView {
++        id: scroll
++        anchors.fill: parent
++        visible: downloadsModel.count > 0
++        contentWidth: availableWidth
++
++        ColumnLayout {
++            width: scroll.availableWidth
++            spacing: Theme.spacingSm
++
++            Repeater {
++                model: downloadsModel
++                delegate: SectionCard {
++                    Layout.fillWidth: true
++                    Layout.margins: Theme.spacingLg
++                    Layout.bottomMargin: 0
++                    Layout.preferredHeight: 76
++
++                    ColumnLayout {
++                        anchors.fill: parent
++                        spacing: Theme.spacingXs
++
++                        RowLayout {
+                             Layout.fillWidth: true
+-                            elide: Text.ElideRight
+-                        }
+-                        Text {
+-                            text: Math.round(modelData.progress * 100) + "%"
+-                            color: Theme.textSecondary
+-                            font.pixelSize: Theme.fontSizeCaption
+-                        }
+-                        AppButton {
+-                            text: "Cancel"
+-                            onClicked: {
+-                                cancelDialog.targetName = modelData.name;
+-                                cancelDialog.open();
++                            spacing: Theme.spacingSm
++                            PlatformBadge { platform: model.platform }
++                            Text {
++                                text: model.title
++                                color: Theme.textPrimary
++                                font.pixelSize: Theme.fontSizeBody
++                                Layout.fillWidth: true
++                                elide: Text.ElideRight
++                            }
++                            Text {
++                                text: model.progressKnown
++                                    ? model.statusLabel + " · " + Math.round(model.progress * 100) + "%"
++                                    : model.statusLabel
++                                color: Theme.textSecondary
++                                font.pixelSize: Theme.fontSizeCaption
++                            }
++                            AppButton {
++                                text: "Cancel"
++                                onClicked: {
++                                    cancelDialog.targetId = model.id;
++                                    cancelDialog.targetName = model.title;
++                                    cancelDialog.open();
++                                }
+                             }
+                         }
+-                    }
+ 
+-                    Rectangle {
+-                        Layout.fillWidth: true
+-                        height: 6
+-                        radius: 3
+-                        color: Theme.border
+                         Rectangle {
+-                            width: parent.width * modelData.progress
+-                            height: parent.height
++                            Layout.fillWidth: true
++                            height: 6
+                             radius: 3
+-                            color: Theme.accent
++                            color: Theme.border
++                            Rectangle {
++                                visible: model.progressKnown
++                                width: parent.width * model.progress
++                                height: parent.height
++                                radius: 3
++                                color: Theme.accent
++                            }
+                         }
+                     }
+                 }
+             }
+-        }
+ 
+-        Item { Layout.preferredHeight: Theme.spacingLg }
++            Item { Layout.preferredHeight: Theme.spacingLg }
++        }
+     }
+ 
+     AppDialog {
+         id: cancelDialog
++        property string targetId: ""
+         property string targetName: ""
+         title: "Cancel this download?"
+         message: "\"" + targetName + "\" will stop downloading. Progress made so far is discarded — this can't be undone."
+         confirmLabel: "Cancel download"
+         cancelLabel: "Keep downloading"
+         destructive: true
+-        onAccepted: ToastController.info("Cancelled \"" + targetName + "\"")
++        onAccepted: {
++            downloadsModel.cancel(targetId);
++            ToastController.info("Cancelled \"" + targetName + "\"");
++        }
+     }
+ }
+--- a/src/twick_hub/presentation/qml/pages/HistoryPage.qml
++++ b/src/twick_hub/presentation/qml/pages/HistoryPage.qml
+@@ -4,45 +4,65 @@
+ import TwickHub 1.0
+ import "../components"
+ 
+-ScrollView {
++// FASE 21b: rows come from `historyModel` (qml_bridge/history_model.py).
++Item {
+     id: root
+-    contentWidth: availableWidth
+ 
+-    property var mockHistory: [
+-        { name: "northernlion — VOD part 11", platform: "twitch", date: "Sep 3, 2026", size: "2.1 GB" },
+-        { name: "adin — clip", platform: "kick", date: "Sep 2, 2026", size: "84 MB" },
+-        { name: "hasanabi — full stream", platform: "twitch", date: "Aug 30, 2026", size: "4.6 GB" }
+-    ]
+-
+-    ColumnLayout {
+-        width: root.availableWidth
+-        spacing: Theme.spacingSm
+-
+-        Repeater {
+-            model: root.mockHistory
+-            delegate: SectionCard {
+-                Layout.fillWidth: true
+-                Layout.margins: Theme.spacingLg
+-                Layout.bottomMargin: 0
+-                Layout.preferredHeight: 56
+-                RowLayout {
+-                    anchors.fill: parent
+-                    spacing: Theme.spacingSm
+-                    PlatformBadge { platform: modelData.platform }
+-                    Text {
+-                        text: modelData.name
+-                        color: Theme.textPrimary
+-                        font.pixelSize: Theme.fontSizeBody
+-                        Layout.fillWidth: true
+-                        elide: Text.ElideRight
++    Component.onCompleted: historyModel.refresh()
++
++    EmptyState {
++        anchors.fill: parent
++        visible: historyModel.loaded && historyModel.count === 0
++        title: "No download history"
++        description: "Completed, failed and cancelled downloads are listed here."
++    }
++
++    ScrollView {
++        id: scroll
++        anchors.fill: parent
++        visible: historyModel.count > 0
++        contentWidth: availableWidth
++
++        ColumnLayout {
++            width: scroll.availableWidth
++            spacing: Theme.spacingSm
++
++            Repeater {
++                model: historyModel
++                delegate: SectionCard {
++                    Layout.fillWidth: true
++                    Layout.margins: Theme.spacingLg
++                    Layout.bottomMargin: 0
++                    Layout.preferredHeight: 56
++                    RowLayout {
++                        anchors.fill: parent
++                        spacing: Theme.spacingSm
++                        PlatformBadge { platform: model.platform }
++                        Text {
++                            text: model.title
++                            color: Theme.textPrimary
++                            font.pixelSize: Theme.fontSizeBody
++                            Layout.fillWidth: true
++                            elide: Text.ElideRight
++                        }
++                        Text {
++                            text: model.outcome !== "" ? model.outcome : model.size
++                            color: model.outcome === "Failed" ? Theme.danger : Theme.textSecondary
++                            font.pixelSize: Theme.fontSizeCaption
++                        }
++                        Text { text: model.date; color: Theme.textSecondary; font.pixelSize: Theme.fontSizeCaption }
++                        AppButton {
++                            text: "Open folder"
++                            onClicked: {
++                                if (!historyModel.openFolder(model.id))
++                                    ToastController.error("Folder not found");
++                            }
++                        }
+                     }
+-                    Text { text: modelData.size; color: Theme.textSecondary; font.pixelSize: Theme.fontSizeCaption }
+-                    Text { text: modelData.date; color: Theme.textSecondary; font.pixelSize: Theme.fontSizeCaption }
+-                    AppButton { text: "Open folder" }
+                 }
+             }
+-        }
+ 
+-        Item { Layout.preferredHeight: Theme.spacingLg }
++            Item { Layout.preferredHeight: Theme.spacingLg }
++        }
+     }
+ }
+--- /dev/null
++++ b/tests/test_qml_bridge_data.py
+@@ -0,0 +1,395 @@
++"""FASE 21b: the Favorites/Downloads/History bridges against the real
++``Container`` (real SQLite, real ``PlatformRegistry``, real
++``DownloadService``), plus the real QML pages rendering what they expose.
++"""
++
++from __future__ import annotations
++
++import asyncio
++from dataclasses import dataclass, field, replace
++from datetime import datetime, timedelta
++from pathlib import Path
++
++import pytest
++from PySide6.QtCore import QCoreApplication, QObject, QUrl
++from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
++from PySide6.QtQuick import QQuickItem
++
++from tests.application.fakes import FakeLiveStreamProvider
++from twick_hub.application.platform_registry import PlatformAdapters, PlatformRegistry
++from twick_hub.bootstrap.container import Container
++from twick_hub.bootstrap.migrations import ensure_schema_migrated
++from twick_hub.domain.collections import Favorite
++from twick_hub.domain.content import Stream
++from twick_hub.domain.downloads import Download
++from twick_hub.domain.enums import DownloadStatus, MediaKind, Platform
++from twick_hub.domain.value_objects import Media, PlatformRef
++from twick_hub.presentation.qml_bridge.context import install_bridges
++from twick_hub.presentation.qml_bridge.downloads_model import DownloadsModel
++from twick_hub.presentation.qml_bridge.favorites_model import FavoritesModel
++from twick_hub.presentation.qml_bridge.history_model import HistoryModel, format_size
++from twick_hub.presentation.qml_bridge.tasks import TaskRunner
++
++_QML_PAGES = Path(__file__).resolve().parents[1] / "src/twick_hub/presentation/qml/pages"
++
++
++def _ref(platform: Platform, external_id: str) -> PlatformRef:
++    return PlatformRef(platform=platform, external_id=external_id)
++
++
++def _media(title: str, *, kind: MediaKind = MediaKind.VIDEO, platform=Platform.TWITCH) -> Media:
++    return Media(kind=kind, ref=_ref(platform, f"m-{title}"), title=title)
++
++
++def _download(title: str, status: DownloadStatus, **kwargs) -> Download:
++    media_kwargs = {k: kwargs.pop(k) for k in ("kind", "platform") if k in kwargs}
++    return Download(
++        media=_media(title, **media_kwargs),
++        destination_path=kwargs.pop("destination_path", f"/tmp/{title}.mp4"),
++        quality_label="720p",
++        status=status,
++        **kwargs,
++    )
++
++
++def _inert_runner() -> TaskRunner:
++    return TaskRunner(lambda coro: coro.close())
++
++
++@pytest.fixture
++def migrated(container: Container) -> Container:
++    ensure_schema_migrated(container.engine)
++    return container
++
++
++def _titles(model) -> list[str]:
++    return [row.get("title", row.get("channelName")) for row in model.rows()]
++
++
++# --- Favorites ------------------------------------------------------------
++
++
++async def test_favorites_empty_is_loaded_and_empty(migrated: Container, qapp):
++    model = FavoritesModel(migrated.favorites, migrated.platform_registry, _inert_runner())
++    assert model.loaded is False
++
++    await model.reload()
++
++    assert model.loaded is True
++    assert model.count == 0
++
++
++async def test_favorites_list_in_position_order_with_unknown_live_state(migrated: Container, qapp):
++    await migrated.favorites.save(Favorite(_ref(Platform.KICK, "adin"), position=1))
++    await migrated.favorites.save(Favorite(_ref(Platform.TWITCH, "111"), position=0))
++    model = FavoritesModel(migrated.favorites, migrated.platform_registry, _inert_runner())
++
++    await model.reload()
++
++    rows = model.rows()
++    assert [(r["channelName"], r["platform"], r["liveState"]) for r in rows] == [
++        ("111", "twitch", "unknown"),
++        ("adin", "kick", "unknown"),
++    ]
++
++
++async def test_favorites_live_state_uses_registry_where_a_platform_can_check(
++    migrated: Container, qapp
++):
++    live_ref = _ref(Platform.TWITCH, "111")
++    stream = Stream(
++        ref=_ref(Platform.TWITCH, "s1"),
++        channel_ref=live_ref,
++        title="t",
++        category=None,
++        started_at=datetime.now(),
++        viewer_count=1,
++    )
++    registry = PlatformRegistry(
++        {
++            Platform.TWITCH: PlatformAdapters(
++                live_stream_provider=FakeLiveStreamProvider(streams={"111": stream})
++            ),
++            Platform.KICK: PlatformAdapters(),
++        }
++    )
++    for position, ref in enumerate(
++        [live_ref, _ref(Platform.TWITCH, "222"), _ref(Platform.KICK, "adin")]
++    ):
++        await migrated.favorites.save(Favorite(ref, position=position))
++    model = FavoritesModel(migrated.favorites, registry, _inert_runner())
++
++    await model.reload()
++
++    assert [r["liveState"] for r in model.rows()] == ["live", "offline", "unknown"]
++
++
++async def test_favorites_live_check_failure_keeps_rows_unknown(migrated: Container, qapp):
++    class _Broken:
++        async def get_live_stream(self, channel_ref: PlatformRef):
++            raise ConnectionError("network down")
++
++    registry = PlatformRegistry(
++        {
++            Platform.TWITCH: PlatformAdapters(live_stream_provider=_Broken()),
++            Platform.KICK: PlatformAdapters(),
++        }
++    )
++    await migrated.favorites.save(Favorite(_ref(Platform.TWITCH, "111")))
++    model = FavoritesModel(migrated.favorites, registry, _inert_runner())
++
++    await model.reload()
++
++    assert [r["liveState"] for r in model.rows()] == ["unknown"]
++
++
++# --- Downloads ----------------------------------------------------------
++
++
++@dataclass
++class _StubEngine:
++    percent: dict[str, float] = field(default_factory=dict)
++    cancelled: list[str] = field(default_factory=list)
++
++    async def enqueue(self, job) -> None: ...
++
++    async def cancel(self, job_id: str) -> None:
++        self.cancelled.append(job_id)
++
++    async def progress_of(self, job_id: str) -> float:
++        return self.percent.get(job_id, 0.0)
++
++
++async def test_downloads_lists_only_active_oldest_first_with_live_progress(
++    migrated: Container, qapp
++):
++    now = datetime.now()
++    older = _download("older", DownloadStatus.DOWNLOADING, created_at=now - timedelta(hours=1))
++    newer = _download("newer", DownloadStatus.QUEUED, created_at=now)
++    done = _download("done", DownloadStatus.COMPLETED)
++    for d in (newer, done, older):
++        await migrated.downloads.save(d)
++    engine = _StubEngine(percent={older.id: 62.0})
++    model = DownloadsModel(migrated.downloads, engine, _inert_runner())
++
++    await model.reload()
++
++    rows = model.rows()
++    assert [r["title"] for r in rows] == ["older", "newer"]
++    assert rows[0]["progress"] == pytest.approx(0.62)
++    assert rows[0]["statusLabel"] == "Downloading"
++    assert rows[1]["statusLabel"] == "Queued"
++    assert model.hasActive is True
++
++
++async def test_downloads_progress_tick_updates_rows_in_place(migrated: Container, qapp):
++    download = _download("vod", DownloadStatus.DOWNLOADING)
++    await migrated.downloads.save(download)
++    engine = _StubEngine(percent={download.id: 10.0})
++    model = DownloadsModel(migrated.downloads, engine, _inert_runner())
++    await model.reload()
++    resets: list[bool] = []
++    changed: list[int] = []
++    model.modelReset.connect(lambda: resets.append(True))
++    model.dataChanged.connect(lambda top_left, *_: changed.append(top_left.row()))
++
++    engine.percent[download.id] = 40.0
++    await model.reload()
++
++    assert model.rows()[0]["progress"] == pytest.approx(0.40)
++    assert changed == [0]
++    assert resets == []  # no delegate rebuild on a plain progress tick
++
++
++async def test_downloads_live_capture_has_no_known_progress(migrated: Container, qapp):
++    await migrated.downloads.save(
++        _download("live", DownloadStatus.DOWNLOADING, kind=MediaKind.STREAM)
++    )
++    model = DownloadsModel(migrated.downloads, _StubEngine(), _inert_runner())
++
++    await model.reload()
++
++    assert model.rows()[0]["progressKnown"] is False
++
++
++async def test_downloads_has_active_signal_follows_the_queue(migrated: Container, qapp):
++    download = _download("vod", DownloadStatus.DOWNLOADING)
++    await migrated.downloads.save(download)
++    model = DownloadsModel(migrated.downloads, _StubEngine(), _inert_runner())
++    emitted: list[bool] = []
++    model.hasActiveChanged.connect(lambda: emitted.append(bool(model.hasActive)))
++
++    await model.reload()
++    await migrated.downloads.save(replace(download, status=DownloadStatus.COMPLETED))
++    await model.reload()
++
++    assert emitted == [True, False]
++
++
++async def test_downloads_cancel_goes_through_the_real_engine_and_drops_the_row(
++    migrated: Container, qapp
++):
++    download = _download("vod", DownloadStatus.DOWNLOADING)
++    await migrated.downloads.save(download)
++    model = DownloadsModel(migrated.downloads, migrated.download_service, _inert_runner())
++    await model.reload()
++
++    await model._cancel_then_reload(download.id)
++
++    stored = await migrated.downloads.get(download.id)
++    assert stored is not None
++    assert stored.status is DownloadStatus.CANCELLED
++    assert model.count == 0
++
++
++# --- History ------------------------------------------------------------------
++
++
++def test_format_size():
++    assert format_size(None) == "—"
++    assert format_size(512) == "512 B"
++    assert format_size(84 * 1024**2) == "84.0 MB"
++    assert format_size(int(2.1 * 1024**3)) == "2.1 GB"
++
++
++async def test_history_lists_finished_newest_first_with_outcomes(migrated: Container, qapp):
++    now = datetime(2026, 9, 3, 12, 0)
++    ok = _download("ok", DownloadStatus.COMPLETED, completed_at=now, file_size_bytes=84 * 1024**2)
++    failed = _download(
++        "failed",
++        DownloadStatus.FAILED,
++        completed_at=now - timedelta(days=1),
++        error_message="boom",
++    )
++    cancelled = _download("cancelled", DownloadStatus.CANCELLED, created_at=now - timedelta(days=2))
++    running = _download("running", DownloadStatus.DOWNLOADING)
++    for d in (cancelled, running, ok, failed):
++        await migrated.downloads.save(d)
++    model = HistoryModel(migrated.downloads, _inert_runner())
++
++    await model.reload()
++
++    rows = model.rows()
++    assert [r["title"] for r in rows] == ["ok", "failed", "cancelled"]
++    assert (rows[0]["date"], rows[0]["size"], rows[0]["outcome"]) == ("Sep 3, 2026", "84.0 MB", "")
++    assert (rows[1]["outcome"], rows[1]["errorMessage"]) == ("Failed", "boom")
++    assert rows[2]["outcome"] == "Cancelled"
++
++
++async def test_history_open_folder_uses_the_download_directory(
++    migrated: Container, qapp, tmp_path: Path
++):
++    download = _download("ok", DownloadStatus.COMPLETED, destination_path=str(tmp_path / "ok.mp4"))
++    await migrated.downloads.save(download)
++    opened: list[Path] = []
++    model = HistoryModel(
++        migrated.downloads, _inert_runner(), opener=lambda folder: opened.append(folder) or True
++    )
++    await model.reload()
++
++    assert model.openFolder(download.id) is True
++    assert opened == [tmp_path]
++    assert model.openFolder("no-such-id") is False
++
++
++async def test_history_open_folder_fails_when_the_directory_is_gone(
++    migrated: Container, qapp, tmp_path: Path
++):
++    download = _download(
++        "ok", DownloadStatus.COMPLETED, destination_path=str(tmp_path / "gone" / "ok.mp4")
++    )
++    await migrated.downloads.save(download)
++    opened: list[Path] = []
++    model = HistoryModel(
++        migrated.downloads, _inert_runner(), opener=lambda folder: opened.append(folder) or True
++    )
++    await model.reload()
++
++    assert model.openFolder(download.id) is False
++    assert opened == []
++
++
++# --- the real QML pages, over the real bridges --------------------------------
++
++
++def _walk(item: QQuickItem):
++    yield item
++    for child in item.childItems():
++        yield from _walk(child)
++
++
++def _of_type(root: QQuickItem, qml_type: str) -> list[QQuickItem]:
++    return [i for i in _walk(root) if i.metaObject().className().startswith(qml_type + "_QMLTYPE")]
++
++
++async def _load_page(container: Container, page: str, warnings: list[str]):
++    loop = asyncio.get_running_loop()
++    engine = QQmlApplicationEngine()
++    engine.warnings.connect(lambda ws: warnings.extend(str(w.toString()) for w in ws))
++    bridges = install_bridges(engine, container, TaskRunner(loop.create_task))
++    component = QQmlComponent(engine, QUrl.fromLocalFile(str(_QML_PAGES / page)))
++    obj = component.create()
++    assert component.errors() == [], [e.toString() for e in component.errors()]
++    assert isinstance(obj, QQuickItem)
++    for _ in range(10):  # let the page's refresh() run and the Repeaters instantiate
++        await asyncio.sleep(0.05)
++        QCoreApplication.processEvents()
++    return engine, bridges, obj, component
++
++
++async def test_favorites_page_renders_real_rows_and_hides_the_empty_state(
++    migrated: Container, qapp
++):
++    await migrated.favorites.save(Favorite(_ref(Platform.TWITCH, "111"), position=0))
++    await migrated.favorites.save(Favorite(_ref(Platform.KICK, "adin"), position=1))
++    warnings: list[str] = []
++
++    engine, bridges, page, component = await _load_page(migrated, "FavoritesPage.qml", warnings)
++
++    assert warnings == []
++    assert len(_of_type(page, "PlatformBadge")) == 2
++    assert [e.isVisible() for e in _of_type(page, "EmptyState")] == [False]
++    del engine, bridges, component
++
++
++async def test_favorites_page_shows_the_empty_state_when_there_are_none(migrated: Container, qapp):
++    warnings: list[str] = []
++
++    engine, bridges, page, component = await _load_page(migrated, "FavoritesPage.qml", warnings)
++
++    assert warnings == []
++    assert _of_type(page, "PlatformBadge") == []
++    assert [e.isVisible() for e in _of_type(page, "EmptyState")] == [True]
++    del engine, bridges, component
++
++
++async def test_downloads_page_ticks_only_while_something_is_active(migrated: Container, qapp):
++    warnings: list[str] = []
++    engine, bridges, page, component = await _load_page(migrated, "DownloadsPage.qml", warnings)
++    timer = next(o for o in page.findChildren(QObject) if o.metaObject().className() == "QQmlTimer")
++    assert timer.property("running") is False  # nothing in flight: no polling at idle
++
++    await migrated.downloads.save(_download("vod", DownloadStatus.DOWNLOADING))
++    bridges.downloads.refresh()
++    for _ in range(10):
++        await asyncio.sleep(0.05)
++        QCoreApplication.processEvents()
++
++    assert timer.property("running") is True
++    assert len(_of_type(page, "PlatformBadge")) == 1
++    assert warnings == []
++    del engine, component
++
++
++async def test_history_page_renders_finished_downloads(migrated: Container, qapp):
++    await migrated.downloads.save(
++        _download("ok", DownloadStatus.COMPLETED, completed_at=datetime.now())
++    )
++    await migrated.downloads.save(_download("running", DownloadStatus.DOWNLOADING))
++    warnings: list[str] = []
++
++    engine, bridges, page, component = await _load_page(migrated, "HistoryPage.qml", warnings)
++
++    assert warnings == []
++    assert len(_of_type(page, "PlatformBadge")) == 1
++    del engine, bridges, component
+--- a/tests/test_qml_shell.py
++++ b/tests/test_qml_shell.py
+@@ -16,6 +16,9 @@
+ from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent, qmlTypeId
+ 
+ import twick_hub.presentation.qml_bridge  # noqa: F401  (registers QML singletons)
++from twick_hub.bootstrap.container import Container
++from twick_hub.presentation.qml_bridge.context import install_bridges
++from twick_hub.presentation.qml_bridge.tasks import TaskRunner
+ 
+ _QML_DIR = Path(__file__).resolve().parents[1] / "src" / "twick_hub" / "presentation" / "qml"
+ 
+@@ -48,21 +51,34 @@
+ ]
+ 
+ 
++def _install_inert_bridges(engine: QQmlApplicationEngine, container: Container):
++    """FASE 21b: Favorites/Downloads/History read their data from bridges on
++    the engine's root context (what ``Application.run`` does). The spawner
++    here just discards the pages' ``refresh()`` coroutines — these tests are
++    about QML loading cleanly; data behavior is tests/test_qml_bridge_data.py.
++    """
++    return install_bridges(engine, container, TaskRunner(lambda coro: coro.close()))
++
++
+ @pytest.fixture
+-def engine_with_warnings(qapp):
++def engine_with_warnings(qapp, container):
+     engine = QQmlApplicationEngine()
++    bridges = _install_inert_bridges(engine, container)
+     warnings: list[str] = []
+     engine.warnings.connect(lambda ws: warnings.extend(str(w.toString()) for w in ws))
+     yield engine, warnings
++    del bridges  # held until the engine is done with them
+ 
+ 
+ @pytest.mark.parametrize("page_file", _PAGE_FILES)
+-def test_each_page_loads_standalone_without_errors(qapp, page_file):
++def test_each_page_loads_standalone_without_errors(qapp, container, page_file):
+     engine = QQmlApplicationEngine()
++    bridges = _install_inert_bridges(engine, container)
+     component = QQmlComponent(engine, QUrl.fromLocalFile(str(_QML_DIR / "pages" / page_file)))
+     obj = component.create()
+     assert component.errors() == [], [e.toString() for e in component.errors()]
+     assert obj is not None
++    del bridges
+ 
+ 
+ def test_shell_loads_and_defaults_to_home(engine_with_warnings):
+--- a/docs/architecture-decisions.md
++++ b/docs/architecture-decisions.md
+@@ -517,3 +517,17 @@
+ **Decisión:** Nuevo `bootstrap/migrations.py::ensure_schema_migrated(engine)`, que corre `alembic.command.upgrade(cfg, "head")` compartiendo la conexión real del `Engine` recibido vía `config.attributes["connection"]` — el idioma estándar de Alembic para uso programático — en vez de dejar que `migrations/env.py` re-derive su propia URL con `load_config()` (lo que ignoraría el `AppConfig` real ya construido y, para un test con `sqlite:///:memory:`, apuntaría a una base de datos distinta e inalcanzable). `migrations/env.py::run_migrations_online()` gana un branch adicional (`config.attributes.get("connection")`) para soportar esto — aditivo, el flujo CLI existente (`alembic upgrade head` sin ese atributo) sigue exactamente igual. `main.py::main()` la llama una sola vez, inmediatamente después de `build_container()` — deliberadamente **no** dentro de `build_container()` mismo: esa función la llama casi toda la suite de tests, muchos contra `sqlite:///:memory:` (una base de datos que solo la conexión que la creó puede ver — correr migraciones ahí sería inútil o incorrecto), y correr la cadena completa de Alembic en cada uno de esos ~1000 tests habría sido puro costo sin beneficio.
+ **Alternativas descartadas:** Envolver la migración dentro de `build_container()` mismo — descartada por lo anterior (rompe/ralentiza la suite existente sin necesidad). Invocar Alembic como subprocess (mismo patrón que ya usa `tests/infrastructure/persistence/test_migrations.py`) — descartada para este call site porque un subprocess no comparte el proceso Python actual: contra `sqlite:///:memory:` apuntaría a una base de datos completamente distinta, y en general reconstruye su propio `AppConfig` desde variables de entorno en vez de usar el que el proceso ya tiene en memoria (frágil si algún día `AppConfig` se construye con parámetros explícitos, no solo variables de entorno). El patrón de subprocess sigue siendo el correcto para sus propios tests dedicados (prueban el flujo real de CLI, no el programático) — no se tocaron.
+ **Consecuencias:** `tests/test_bootstrap_migrations.py` (nuevo, 3 tests): esquema completo desde cero, idempotencia, y un `Container` usable sin ningún `Base.metadata.create_all()` manual. Además, smoke test real fuera de la suite de tests (no comiteado, solo verificado en esta sesión): `main()` corrido de punta a punta (`QT_QPA_PLATFORM=offscreen`) contra un directorio de datos genuinamente vacío crea las 10 tablas esperadas + `alembic_version`, arranca y cierra con código 0. Suite completa: 1039/1039 passed (1036 + 3 nuevos), `tests/infrastructure/persistence/test_migrations.py` (15 tests, flujo CLI/subprocess) sigue pasando sin cambios — confirma que el branch nuevo en `env.py` es aditivo, no rompe el camino existente. `ruff`/`pyright` sin cambios respecto de 21a. RISK-PKG-02 queda RESUELTO para instalación fuente/editable; el bundle congelado de PyInstaller (FASE 19) queda como hueco explícito y documentado (no empaqueta `alembic.ini`/`migrations/` ni resuelve esas rutas bajo `sys._MEIPASS` — mismo tipo de problema que AD-97 ya resolvió para QML, pendiente para quien retome Packaging).
++
++
++## AD-100 — FASE 21b: los bridges de datos QML son objetos Python inyectados en el `rootContext` de cada motor, no `@QmlSingleton`
++**Decisión:** `presentation/qml_bridge/context.py::install_bridges(engine, container, runner)` construye `FavoritesModel`, `DownloadsModel` y `HistoryModel` a partir de los servicios del `Container` y los expone bajo `favoritesModel`/`downloadsModel`/`historyModel` en el `rootContext` de **ese** motor (`Application.run()` lo llama antes de `load()`). Los tres heredan de `row_model.RowListModel` (filas `dict` por nombre de rol; `replace_rows` compara por `id` y emite `dataChanged` si la lista tiene la misma forma, `modelReset` solo si cambia). `NavigationController`/`Theme`/`ToastController` siguen siendo `@QmlSingleton`: no guardan datos de aplicación, no necesitan inyección.
++**Por qué no `@QmlSingleton` también para los bridges:** el motor instancia los singletons sin argumentos, así que el `Container` solo llegaría por estado global (lo que AD-03 prohíbe) o parcheando una clase después de crearla. El contexto por motor es inyección por construcción — mismo principio que `Application(container, qt_app)`.
++**Ciclo de vida:** los modelos tienen al motor como padre Qt (Qt los destruye *después* de desmontar el QML que los enlaza). Sin eso, una página viva al cerrar leía un modelo ya borrado y logueaba `Cannot read property 'count' of null` (visto en el smoke test real, corregido en esta fase). `TaskRunner(loop.create_task)` (`tasks.py`) es el único punto que lanza coroutines desde slots: conserva referencia fuerte y loguea excepciones; el spawner se inyecta, no hay loop global.
++**Casos de uso nuevos (aditivos, sin tocar API pública):** `ListActiveDownloadsUseCase` y `ListDownloadHistoryUseCase` en `application/downloads.py` (estados activos vs. terminales; usan `DownloadRepository.list_by_status`, sin ampliar el Protocol). Favoritos reutiliza `ListFavoritesUseCase`/`GetFavoritesLiveStateUseCase`; cancelar reutiliza `CancelDownloadUseCase`.
++**Favoritos, degradación:** carga en dos fases — (1) lista desde SQLite con `liveState="unknown"`, (2) solo si algún favorito pertenece a una plataforma con `has_live`, consulta el estado vivo; una excepción ahí deja todo en `unknown` (no falla la página). Nunca se muestra `offline` para un canal que nadie pudo consultar.
++**Tests:** `tests/test_qml_bridge_data.py` (17): modelos contra SQLite real + `PlatformRegistry` real + `DownloadService` real, y las tres páginas QML reales renderizando filas (cuenta de `PlatformBadge`, visibilidad de `EmptyState`, estado del `Timer`). `tests/test_qml_shell.py` se adapta: las páginas ahora requieren los bridges en el contexto.
++
++## AD-101 — FASE 21b: progreso en vivo por sondeo de 1 Hz solo mientras la página está visible y hay descargas activas
++**Contexto:** `DownloadExecutor` persiste `progress_percent` únicamente al completar; el avance intermedio vive en memoria (`ProgressTracker`, accesible vía `DownloadEngine.progress_of`). No existe un evento de progreso hacia la UI (`EventBus` no está cableado, AD-31/AD-36).
++**Decisión:** `DownloadsPage.qml` tiene un `Timer` de 1000 ms con `running: root.visible && downloadsModel.hasActive` que llama `refresh()` (una consulta indexada por estados + lecturas en memoria). Sin descargas activas, o en otra página (el `Loader` destruye la página), no hay ticks. Las capturas en vivo (`MediaKind.STREAM`) no tienen total conocido: `progressKnown=false` y la barra no muestra un 0 % engañoso.
++**Alternativa descartada:** suscribir el modelo a un `EventBus` de progreso — requiere diseñar y cablear ese bus (RISK-ARCH-05); se reevalúa si se mide que el sondeo importa (Master Plan §11).
+--- a/docs/risk-register.md
++++ b/docs/risk-register.md
+@@ -50,7 +50,7 @@
+ **Evidencia:** 49 archivos `Ui/*.py` + 28 `.ui` de Qt Designer en 3.5.5, todos QtWidgets — cero reutilizables como implementación bajo QML (AD-02).
+ **Impacto:** FASE 2 es, en volumen, la fase de mayor superficie de reescritura de todo el proyecto.
+ **Mitigación:** Preservar comportamiento/flujo documentado (no el código) al construir cada pantalla QML; usar `Ui/*.py` solo como referencia de UX.
+-**Estado:** Aceptado, es el costo conocido de AD-02.
++**Estado:** Aceptado, es el costo conocido de AD-02. FASE 21b: 3 de las 6 páginas con mock (Favorites, Downloads, History) pasaron a datos reales; quedan Search, Live y Account (21d).
+ 
+ ## RISK-PKG-01 — Selenium/Patchright + PyQt6-WebEngine en tamaño y estabilidad del paquete
+ **Severidad:** MEDIUM
+@@ -91,7 +91,7 @@
+ **Evidencia:** Master Plan §43: "La UI debe ocultar/deshabilitar funciones no soportadas." `presentation/qml` sigue siendo mock puro (decisión explícita de FASE 2, RISK-UI-01) — no hay ningún bridge QML que exponga `PlatformCapabilities.as_dict()` todavía.
+ **Impacto:** Ninguno hoy — ninguna página real consume datos de plataforma aún. Si una fase de feature real (FASE 9+) conecta datos sin antes conectar capabilities, podría mostrar controles para funciones que la plataforma activa no soporta (p. ej. "Clips" en Kick).
+ **Mitigación:** `PlatformCapabilities.as_dict()` ya deja el mapeo bool camelCase listo (ver AD-31) para que la primera fase que conecte una página real a datos de plataforma agregue el bridge QML correspondiente antes o junto con esa conexión.
+-**Estado:** ABIERTO, informativo — recordar explícitamente en el `docs/phase-state.md` de FASE 9+ antes de cerrar cualquiera de esas fases como PASS.
++**Estado:** ABIERTO, informativo — recordar explícitamente en el `docs/phase-state.md` de FASE 9+ antes de cerrar cualquiera de esas fases como PASS. FASE 21b: Favorites/Downloads/History ya leen datos reales, pero ningún bridge expone todavía `PlatformCapabilities.as_dict()` a QML (`FavoritesModel` la consulta internamente solo para decidir `unknown` vs. `live`/`offline`); sigue abierto para 21d (Search/Live/Account).
+ 
+ ## RISK-ARCH-02 — `EnqueueDownloadUseCase` sigue con un `PlaybackResolver` único, no `PlatformRegistry`-aware (hallazgo FASE 7)
+ **Severidad:** LOW hoy (Kick no tiene `PlaybackResolver` de todas formas), potencialmente MEDIUM cuando Kick sí lo tenga.
+@@ -378,3 +378,23 @@
+ **Impacto:** Descarga/instalación más pesada de lo necesario para el usuario final; no afecta funcionalidad (el smoke test offscreen real de FASE 19 arrancó correctamente con el bundle sin podar).
+ **Mitigación (no implementada esta fase — Master Plan §11 "la eficiencia debe medirse, no asumirse": la medición ya está hecha; el recorte queda como trabajo concreto y acotado para quien lo aborde):** un paso de poda posterior al build (script, no parte del `.spec` declarativo) que elimine de `dist/TwickHub/_internal/PySide6/Qt/lib/` y `Qt/qml/` los módulos listados arriba por nombre, seguido siempre de re-correr el mismo smoke test offscreen de `docs/packaging.md` antes de dar la poda por buena — nunca podar y asumir que sigue funcionando sin volver a arrancar el binario.
+ **Estado:** ABIERTO, informativo — no bloqueante para el cierre de FASE 19 (el bundle sin podar es correcto y arranca; esto es una optimización de tamaño, no un defecto).
++
++
++## RISK-UI-03 — Favoritos muestran el id de plataforma, no el nombre del canal (hallazgo FASE 21b)
++**Severidad:** MEDIUM
++**Evidencia:** `Favorite` guarda solo `channel_ref` (por diseño, FASE 9) y `AddFavoriteUseCase` no persiste el `Channel` resuelto en `ChannelRepository`; además `Container` no expone `channels`. Para Twitch `external_id` es el id numérico de usuario (`gql/mappers.py`), no el login. `FavoritesModel` usa `external_id` como etiqueta.
++**Impacto:** con datos reales, la tarjeta de un favorito de Twitch diría `12345`, no `northernlion`.
++**Mitigación:** en 21c/21d, hacer que `AddFavoriteUseCase` guarde el `Channel` en `ChannelRepository`, cablear `channels` en `Container` y que `FavoritesModel` resuelva el nombre desde ahí (fallback a `external_id`).
++**Estado:** ABIERTO.
++
++## RISK-PERF-05 — El historial carga todos los registros terminales sin paginar (FASE 21b)
++**Severidad:** LOW
++**Evidencia:** `ListDownloadHistoryUseCase` usa `DownloadRepository.list_by_status`, que no admite `limit`/`offset` (FASE 8 paginó solo `list_all`); ampliar el Protocol es un cambio de API pública, fuera de 21b.
++**Mitigación:** cuando el historial real crezca, añadir `limit`/`offset` opcionales a `list_by_status` (retrocompatible) y paginar en `HistoryModel`. No optimizar sin medir (Master Plan §11).
++**Estado:** ABIERTO, informativo.
++
++## RISK-ARCH-06 — El ciclo de vida del motor de descargas no participa en el cierre de `Application` (FASE 21b)
++**Severidad:** LOW hoy, MEDIUM en cuanto 21d permita encolar descargas desde la UI
++**Evidencia:** `Application._shutdown()` solo hace `engine.dispose()`. Nadie llama `DownloadService.stop()` ni `aclose()` del `httpx.AsyncClient` creado en `_build_download_service` (21a). El coordinador arranca de forma perezosa en el primer `enqueue`, y ninguna UI encola todavía, así que hoy no hay workers vivos al cerrar.
++**Mitigación:** en la sub-fase que conecte el primer `enqueue` desde la UI (21d), cerrar workers y cliente HTTP en el cierre, antes de `engine.dispose()`. La página Downloads tampoco ofrece pausar/reanudar (el mock nunca lo tuvo; `DownloadService.pause/resume` existen).
++**Estado:** ABIERTO.
+--- a/docs/phase-state.md
++++ b/docs/phase-state.md
+@@ -1,39 +1,32 @@
+ PROJECT_NAME: Twick Hub
+ MASTER_PLAN_VERSION: 3.0
+-CURRENT_PHASE: FASE 21a — Wiring de Container (PASS) + fix puntual de RISK-PKG-02 (previo a 21b) — ver FASE_21_INTEGRACION_FINAL.md
+-PHASE_STATUS: CERRADA — PASS. 21a conectó a `Container` todo lo ya construido y testeado (FASE 6-13) que no depende de una sesión Twitch/Kick real: `downloads`, `download_service`, `notifications`, `scheduled_downloads`, `platform_registry` (detalle completo en docs/architecture-decisions.md AD-98). Entre el cierre de 21a y el inicio de 21b se resolvió además RISK-PKG-02 (ninguna instalación nueva creaba el esquema de base de datos) — se había vuelto bloqueante para 21b, no antes — ver AD-99.
+-HALLAZGO_FASE_21a: Auditoría inicial confirmó el estado descrito por FASE_21_INTEGRACION_FINAL.md sin discrepancias (git en el merge de Fase19+Fase20 BLOCKED, working tree limpio, `Container` solo con `favorites`, 6 páginas QML mock). Esta sesión SÍ tuvo red hacia PyPI — toda la suite se corrió de cero, no se asumieron cifras heredadas.
+-LIMITACION_DE_ENTORNO_FASE_21a: Ninguna relevante (21a/el fix de RISK-PKG-02 no necesitan red hacia twitch.tv/kick.com). Entorno con PySide6/SQLAlchemy/httpx/alembic/pytest/ruff/pyright instalados y verificados funcionando (venv en `.venv/`, no comiteado).
+-LAST_COMPLETED_PHASE: FASE 21a (PASS) + fix de RISK-PKG-02 (ver AD-99). FASE 20 (Final Architecture Review) sigue BLOCKED como veredicto propio, sin cambios.
+-SOURCE_BASELINE: Continuación en el mismo working tree recibido (Twick_Hub.zip re-subido). Sin commit nuevo todavía — el usuario decide cuándo commitear.
++CURRENT_PHASE: FASE 21b — qml_bridge real para Favorites, Downloads, History (PASS) — ver FASE_21_INTEGRACION_FINAL.md
++PHASE_STATUS: CERRADA — PASS. `FavoritesPage.qml`, `DownloadsPage.qml` y `HistoryPage.qml` dejaron de usar `property var mock*`: leen de `favoritesModel`/`downloadsModel`/`historyModel`, bridges Python inyectados por motor en el `rootContext` (AD-100) sobre los repositorios/servicios reales del `Container`. Progreso en vivo por sondeo de 1 Hz solo con la página visible y descargas activas (AD-101). Con Twitch/Kick sin adapters (21c), Favorites degrada a "Status unknown" en lugar de fallar.
++HALLAZGO_FASE_21b: (1) `DownloadExecutor` solo persiste `progress_percent` al completar: el avance en vivo se lee de `DownloadEngine.progress_of` (memoria). (2) `Favorite` no guarda nombre de canal y `AddFavoriteUseCase` no persiste el `Channel`: la tarjeta muestra el `external_id` (RISK-UI-03). (3) Bug de cierre detectado y corregido en el smoke test real: modelos destruidos antes que el QML que los enlaza -> se parentan al motor. (4) Sin adapters de plataforma no hay forma de crear favoritos ni descargas desde la UI: en una corrida real las tres páginas muestran su estado vacío hasta 21c/21d; los datos reales se verificaron sembrando SQLite.
++LIMITACION_DE_ENTORNO_FASE_21b: Ninguna relevante (sin red a twitch.tv/kick.com, no necesaria). Suite re-ejecutada de cero con PySide6 6.11.2 en venv. Verificación visual real (ventana con pantalla) no disponible: todo corrió con QT_QPA_PLATFORM=offscreen; el render se verificó por árbol de items QML, no por captura de pantalla.
++LAST_COMPLETED_PHASE: FASE 21b (PASS). Antes: FASE 21a (PASS) + fix RISK-PKG-02 (AD-98/AD-99), ambos aún sin commit en el working tree recibido. FASE 20 sigue BLOCKED como veredicto propio.
++SOURCE_BASELINE: Mismo working tree recibido (Twick_Hub.zip): HEAD 9e96ad5 + cambios sin commitear de 21a/RISK-PKG-02. Sin commit nuevo — el usuario decide cuándo commitear.
+ PROJECT_VERSION: 0.1.0 (sin cambios)
+-TEST_STATUS: pytest 1039/1039 passed (1031 heredados + 5 de 21a en tests/test_container.py + 3 del fix de RISK-PKG-02 en tests/test_bootstrap_migrations.py). ruff: 8 errores conocidos, sin cambios (E501 en migrations/versions/). pyright: 0 errors, 0 warnings, 0 informations. Todo re-ejecutado de cero en esta sesión.
+-STATIC_ANALYSIS_STATUS: ruff/pyright limpios sobre archivos modificados y sobre el repo completo.
+-RUNTIME_VALIDATION_STATUS: `tests/test_application_lifecycle.py` (sin modificar) sigue pasando con el Container ampliado. Además, smoke test real fuera de la suite (verificado en esta sesión, no comiteado como test): `main()` corrido de punta a punta (QT_QPA_PLATFORM=offscreen) contra un directorio de datos genuinamente vacío — sin ningún .db preexistente — crea las 10 tablas esperadas + alembic_version, carga el shell QML y cierra con código 0. Confirma RISK-PKG-02 resuelto contra el flujo real de `main()`, no solo contra fixtures de test.
++TEST_STATUS: pytest 1056/1056 passed (1039 + 17 nuevos en tests/test_qml_bridge_data.py; tests/test_qml_shell.py adaptado, mismo número de tests). ruff: 8 errores conocidos, sin cambios (E501 en migrations/versions/). pyright: 0 errors, 0 warnings, 0 informations. Todo re-ejecutado de cero.
++STATIC_ANALYSIS_STATUS: ruff/pyright limpios sobre archivos nuevos/modificados y el repo completo (salvo los 8 conocidos).
++RUNTIME_VALIDATION_STATUS: smoke real fuera de la suite (no comiteado): `Application.run()` con qasync, `QT_QPA_PLATFORM=offscreen`, SQLite con 2 favoritos, 1 descarga activa y 1 completada; navegando por las 3 páginas los bridges quedaron con 2/1/1 filas correctas, 0 warnings QML y cierre con código 0 sin ruido de teardown.
+ KNOWN_BLOCKERS:
+-  - El artefacto Windows x64 real sigue sin poder producirse en este entorno (sin runner/máquina Windows) — sin cambios, no es competencia de FASE 21.
++  - El artefacto Windows x64 real sigue sin poder producirse en este entorno — sin cambios, no es competencia de FASE 21.
+ KNOWN_RISKS:
+-  - RESUELTO en 21a: RISK-ARCH-03 (motor de descargas sin wirear).
+-  - PARCIALMENTE RESUELTO en 21a: RISK-ARCH-04 (favorites/downloads/notifications/scheduled_downloads wireados; channels/playlists siguen abiertos, no los necesita 21b).
+-  - AVANZADO PARCIALMENTE en 21a: RISK-ARCH-01 (Container.platform_registry ya existe y es real, sin adapters con credenciales — eso sigue siendo FASE 21c).
+-  - RESUELTO (instalación fuente/editable) por el fix posterior a 21a: RISK-PKG-02. Hueco explícito que queda: el bundle congelado de PyInstaller no empaqueta alembic.ini/migrations/ todavía — ver AD-99, pendiente de quien retome Packaging con una máquina Windows real.
+-  - Sin cambio de estado: RISK-UI-01/02 (21a no toca presentation/), RISK-ARCH-02/05, RISK-DATA-01/02, RISK-RESUME-01, RISK-UX-01, RISK-CONCURRENCY-01, RISK-PERF-01, RISK-LIVE-01..05, RISK-KICK-01..03, RISK-TWITCH-01..04, RISK-SEC-01/02, RISK-MIGRATION-01, RISK-PROD-01/02, RISK-TEST-01, RISK-BUILD-01/02.
+-IMPORTANT_DECISIONS: docs/architecture-decisions.md AD-98 (wiring de Container: qué repos entran y cuáles no; las 5 decisiones de ensamblado del motor de descargas; platform_registry registrado-pero-vacío) y AD-99 (ensure_schema_migrated: por qué vive en main.py y no en build_container(), por qué comparte la conexión del Engine en vez de re-derivar una URL, por qué no se usó el patrón de subprocess de los tests existentes).
++  - NUEVOS en 21b: RISK-UI-03 (favoritos sin nombre de canal), RISK-PERF-05 (historial sin paginar), RISK-ARCH-06 (ciclo de vida del motor de descargas fuera del cierre de `Application`).
++  - AVANZADO en 21b: RISK-UI-01 (3 de 6 páginas con mock ya son reales). RISK-UI-02 sin cerrar (capabilities aún no expuestas a QML).
++  - Sin cambio de estado: RISK-ARCH-01/02/04/05, RISK-DATA-01/02, RISK-RESUME-01, RISK-UX-01, RISK-CONCURRENCY-01, RISK-PERF-01..04, RISK-LIVE-01..05, RISK-KICK-01..03, RISK-TWITCH-01..04, RISK-SEC-01/02, RISK-MIGRATION-01, RISK-PROD-01/02, RISK-TEST-01, RISK-BUILD-01/02, RISK-PKG-02 (hueco del bundle congelado).
++IMPORTANT_DECISIONS: docs/architecture-decisions.md AD-100 (bridges por `rootContext`, `RowListModel`, `TaskRunner`, padre = motor, casos de uso nuevos, degradación de Favorites) y AD-101 (sondeo 1 Hz condicionado).
+ FILES_CHANGED:
+-  - src/twick_hub/bootstrap/container.py (21a: 5 campos nuevos)
+-  - src/twick_hub/bootstrap/dependencies.py (21a: build_container() ensambla los 5 campos nuevos + _build_download_service())
+-  - src/twick_hub/bootstrap/migrations.py (nuevo — fix RISK-PKG-02: ensure_schema_migrated())
+-  - src/twick_hub/main.py (fix RISK-PKG-02: llama a ensure_schema_migrated() una vez, tras build_container())
+-  - migrations/env.py (fix RISK-PKG-02: run_migrations_online() soporta connection compartida, aditivo)
+-  - tests/test_container.py (21a: 5 tests nuevos)
+-  - tests/test_bootstrap_migrations.py (nuevo — fix RISK-PKG-02: 3 tests)
+-  - docs/architecture-decisions.md (AD-98, AD-99)
+-  - docs/risk-register.md (RISK-ARCH-01/03/04 y RISK-PKG-02 actualizados)
+-  - docs/phase-state.md (este archivo)
+-  - Ningún archivo de presentation/qml/qml_bridge tocado — eso es 21b, todavía no empezada.
+-NEXT_PHASE: FASE 21b — qml_bridge real para Favorites, Downloads, History (FASE_21_INTEGRACION_FINAL.md §21b).
++  - src/twick_hub/application/downloads.py (2 casos de uso nuevos, aditivo)
++  - src/twick_hub/bootstrap/application.py (instala bridges antes de cargar el QML)
++  - src/twick_hub/presentation/qml_bridge/{context,row_model,tasks,favorites_model,downloads_model,history_model}.py (nuevos)
++  - src/twick_hub/presentation/qml/pages/{FavoritesPage,DownloadsPage,HistoryPage}.qml (mock -> bridge, con estado vacío)
++  - tests/test_qml_bridge_data.py (nuevo, 17 tests), tests/test_qml_shell.py (adaptado)
++  - docs/architecture-decisions.md, docs/risk-register.md, docs/phase-state.md
++NEXT_PHASE: FASE 21e checkpoint intermedio (app funcional sin red) según el orden recomendado 21a -> 21b -> 21e -> 21c -> 21d -> 21e; o directamente FASE 21c si el usuario prefiere.
+ NEXT_PHASE_PREREQUISITES:
+-  (1) RISK-PKG-02 ya no bloquea a 21b (resuelto arriba) — puede empezar de inmediato.
+-  (2) Revisar cómo están registrados `navigation.py`/`theme.py` en `presentation/qml_bridge/` antes de decidir el patrón de los nuevos bridges (mismo patrón AD-03, no un singleton nuevo) — instrucción explícita de FASE_21_INTEGRACION_FINAL.md §21b, todavía no hecha.
+-  (3) `favorites`, `downloads`, `notifications` y `platform_registry` (para el estado "vivo/desconocido" degradado) ya están reales en Container y el esquema ya se crea solo — no hay bloqueo técnico restante para arrancar 21b.
++  (1) 21e (checkpoint) no necesita nada más: correr la app real y confirmar qué páginas son reales (Favorites/Downloads/History) y cuáles mock (Search/Live/Account).
++  (2) 21c debe ejecutarse en la máquina del usuario (red a twitch.tv/kick.com) — aclararlo al abrir ese chat.
++  (3) Antes de que 21d permita encolar descargas desde la UI: resolver RISK-ARCH-06 y RISK-UI-03.
+ DATE_UTC: 2026-09-27

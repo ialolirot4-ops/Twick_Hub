@@ -13,7 +13,7 @@ import os
 import sys
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +51,14 @@ class AppConfig(BaseSettings):
     data_dir: Path = Field(default_factory=default_data_dir)
     log_level: str = "INFO"
     database_url: str | None = None
+
+    # FASE 21c: the project's own registered Kick application (OAuth 2.1 +
+    # PKCE). ``TWICK_HUB_KICK_CLIENT_ID`` / ``TWICK_HUB_KICK_CLIENT_SECRET``
+    # in the environment or a git-ignored ``.env``; never hardcoded. The
+    # secret is a ``SecretStr`` so it can't leak through ``repr(config)``
+    # or a log line. Unset means Kick sign-in reports "not configured".
+    kick_client_id: str | None = None
+    kick_client_secret: SecretStr | None = None
 
     def resolved_database_url(self) -> str:
         """Returns ``database_url`` if set, otherwise a SQLite file under

@@ -55,7 +55,11 @@ class TwitchChannelDirectory:
         return map_stream(user, channel_ref)
 
     async def _lookup(self, login: str = "", external_id: str = "") -> Channel | None:
-        response = await self._client.send(GET_CHANNEL, {"id": external_id, "login": login})
+        # Only the variable that was given: Twitch reads an empty-string id
+        # as "look up id ''" (no such user), not as "no id" — the same rule
+        # TwitchLink 3.5.6's getChannel follows. The other one goes out null.
+        variables: dict[str, object] = {"id": external_id} if external_id else {"login": login}
+        response = await self._client.send(GET_CHANNEL, variables)
         user = response.get("data", {}).get("user")
         # Ported from TwitchGQLAPI.py's `_raiseIfNone`: a deleted/unknown
         # user comes back with id "0", not a null user.

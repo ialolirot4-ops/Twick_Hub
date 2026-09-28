@@ -22,8 +22,15 @@ from dataclasses import dataclass
 from sqlalchemy import Engine
 from sqlalchemy.orm import sessionmaker
 
+from twick_hub.application.platform_registry import PlatformRegistry
 from twick_hub.config.settings import AppConfig
-from twick_hub.domain.protocols import FavoriteRepository
+from twick_hub.domain.protocols import (
+    DownloadEngine,
+    DownloadRepository,
+    FavoriteRepository,
+    NotificationRepository,
+    ScheduledDownloadRepository,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,11 +39,21 @@ class Container:
     engine: Engine
     session_factory: sessionmaker
     favorites: FavoriteRepository
+    downloads: DownloadRepository
+    download_service: DownloadEngine
+    notifications: NotificationRepository
+    scheduled_downloads: ScheduledDownloadRepository
+    platform_registry: PlatformRegistry
 
-    # FASE 10+ adds twitch_client, kick_client, download_service, and so
-    # on here — each built in dependencies.py and added as a field,
-    # never reached through import-time global state. `favorites` (FASE
-    # 9) is the first real one — SqlFavoriteRepository only needs
-    # session_factory, already available; the platform adapters need
-    # real credentials/config this environment doesn't have (see
-    # docs/risk-register.md RISK-ARCH-01/03).
+    # FASE 21a wires everything above that doesn't need a live Twitch/Kick
+    # session — see docs/architecture-decisions.md's FASE 21a entry for
+    # the download-engine assembly decisions (worker count, work_dir,
+    # HTTP client, ffmpeg path) that FASE 7 (AD-36) deliberately left
+    # open. `platform_registry` is built with both platforms registered
+    # under an empty `PlatformAdapters()` each, never left unregistered —
+    # see PlatformRegistry's own docstring — so callers degrade (no
+    # live status, no channel search) instead of raising
+    # UnknownPlatformError. Real `AccountProvider`/`ChannelDirectory`
+    # adapters for Twitch/Kick are FASE 21c's job, not this one — they
+    # need live credentials this environment doesn't have (see
+    # docs/risk-register.md RISK-ARCH-01).

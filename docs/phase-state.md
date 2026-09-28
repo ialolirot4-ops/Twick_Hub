@@ -1,30 +1,52 @@
 PROJECT_NAME: Twick Hub
 MASTER_PLAN_VERSION: 3.0
-CURRENT_PHASE: FASE 20 — Final Architecture Review
-PHASE_STATUS: CERRADA — Veredicto BLOCKED. Ver docs/final-architecture-review.md para la matriz completa (22 requisitos auditados: continuidad, arquitectura, Domain, Application, Infrastructure, Presentation, Twitch, Kick, capabilities, downloader, HLS, FFmpeg, scheduler, persistence, favorites, notifications, UI, performance, security, tests, packaging, updater, migration) y el razonamiento línea por línea. Resumen: (1) el .exe Windows x64 pedido por Master Plan §56 sigue sin existir — blocker heredado de FASE 19, no nuevo. (2) La "aplicación final candidata" corre (main() -> Application.run() carga el shell QML correctamente) pero muestra una UI 100% mock: las 6 páginas con datos (Search/Downloads/Favorites/History/Live/Account) usan `property var mock*` hardcodeado; `qml_bridge/` solo expone navigation/theme/toast. Esto es consistente con RISK-UI-01/02 (decisión explícita desde FASE 2) y con RISK-ARCH-01/03/04/05 (bootstrap/dependencies.py::build_container() solo construye `favorites`; los demás servicios ya construidos y testeados — downloads, scheduling, live_monitor, notifications, platform_registry — nunca se ensamblan en Container ni se conectan al ciclo de vida de Application). (3) RISK-SEC-02 (la clave pública Ed25519 del updater es un par de desarrollo, con la privada en el historial del repo) es inofensivo hoy (MANIFEST_URL apunta a un dominio de ejemplo) pero sería el verdadero gate de seguridad antes de cualquier release real. Ningún hallazgo es un defecto de calidad de código: arquitectura confirmada limpia por auditoría estática (cero singletons/getInstance, cero `import *`, cero `shell=True`, domain/ sin imports de SQLAlchemy/PySide6/httpx, presentation/ sin imports de domain/infrastructure/application). Lo que falta es integración final entre piezas ya terminadas, no calidad de lo ya construido.
-HALLAZGO_DE_CONTINUIDAD_FASE_20: El cierre de FASE 19 afirmaba dos cosas que la auditoría estática de esta fase no pudo confirmar contra el artefacto recibido: (a) que `src/twitchlink_next/` había sido "eliminado del repositorio" — sigue presente, 392 KB, 8 subcarpetas; el diagnóstico de RISK-BUILD-01 y su mitigación real (`include = ["twick_hub*"]` en pyproject.toml) sí son correctos, pero el borrado descrito nunca se aplicó. (b) que existía "un commit real" con el trabajo de FASE 19 — `git log --oneline` sigue mostrando `1ca5b00 Fase18: Testing` como último commit; `git status` mostraba 6 archivos modificados y 5 sin trackear, todos de FASE 19, sin commitear. Esto es una recurrencia exacta del patrón que RISK-BUILD-02 (FASE 18) ya había señalado con una recomendación explícita de commitear al cierre de cada fase — recomendación no seguida en FASE 19 pese a afirmar lo contrario. Corregido en esta fase: RISK-BUILD-01 en docs/risk-register.md actualizado a su estado real; docs/final-architecture-review.md §1 tiene el detalle completo. No se borró src/twitchlink_next/ en esta fase (sería remediación de FASE 19, fuera del mandato de auditoría de FASE 20) — queda como acción recomendada pendiente.
-LIMITACION_DE_ENTORNO_FASE_20: Esta sesión no tuvo acceso a red ni las dependencias del proyecto instaladas (PySide6/SQLAlchemy/Alembic/pytest/ruff/pyright/PyInstaller — confirmado, `pip install` falla por falta de red). A diferencia de FASE 14-19 (AD-88, PyPI real disponible), FASE 20 es una auditoría estática: lectura de código fuente, grep/diff estructurales, contraste contra git real — no re-ejecución de pytest/ruff/pyright/alembic/PyInstaller. Los números 1031/1031 · ruff 8 · pyright 0/0/0 citados aquí son evidencia heredada de FASE 18/19, no reproducida en esta sesión.
-LAST_COMPLETED_PHASE: FASE 20 — Final Architecture Review (cerrada con veredicto BLOCKED — ver PHASE_STATUS; FASE 19 sigue sin poder marcarse PASS por el mismo motivo que ya declaraba: el artefacto Windows x64 no existe)
-SOURCE_BASELINE: Continuación en el mismo contenedor de trabajo tras el cierre de FASE 19 (Twick_Hub.zip, TwitchLink-3_5_6.zip y Twick_Hub_Master_Plan_v3.md subidos de nuevo, en una conversación nueva). Esta sesión NO tuvo acceso a red ni a PyPI/GitHub — ver LIMITACION_DE_ENTORNO_FASE_20.
-PROJECT_VERSION: 0.1.0 (sin cambios en esta fase — FASE 20 es auditoría, no escribe código de producción, por mandato de Master Plan §57 y regla permanente #2)
-TEST_STATUS: No reproducido en esta sesión (ver LIMITACION_DE_ENTORNO_FASE_20). Cifra heredada y citada, no verificada de nuevo: pytest 1031/1031, ruff 8 errores conocidos (E501 aceptados desde FASE 16), pyright 0/0/0 — todos del cierre de FASE 19.
-STATIC_ANALYSIS_STATUS: No reproducido (ruff/pyright) en esta sesión — ver LIMITACION_DE_ENTORNO_FASE_20. Auditoría estática propia de FASE 20 (grep/diff manuales, no ruff/pyright) no encontró `import *`, patrones singleton/service-locator, ni `shell=True` en `src/twick_hub`.
-RUNTIME_VALIDATION_STATUS: No se ejecutó nada en esta sesión (sin PySide6/qasync instalados, sin red). El veredicto de FASE 20 se basa en lectura directa de código (bootstrap/application.py, bootstrap/container.py, bootstrap/dependencies.py, presentation/qml/pages/*.qml, presentation/qml_bridge/*.py) más los docs de continuidad, no en una corrida real de la app.
+CURRENT_PHASE: FASE 21c — credenciales/adapters reales de Twitch y Kick
+PHASE_STATUS: CERRADA — PASS, con alcance declarado. Adapters reales de Twitch y Kick cableados al `Container` y verificados en vivo en Windows 11: Kick 3/3, Twitch `twitch-channel` y `twitch-integrity`. **Sin verificar** (no es un fallo, no se probó): `twitch-account` y `twitch-playback` (el import de sesión solo soporta Firefox y el usuario no lo usa; ver RISK-TWITCH-05), `kick-disconnect` (revocación real) y Kick sin sesión iniciada.
+MATRIZ_REAL_VS_MOCK (sin cambio; 21c no toca QML):
+  - REAL: Favorites, Downloads, History, y los dos contadores de Home.
+  - MOCK: Search, Live, Account (21d); Home en "Live now" y "Recent activity"; Settings.
+  - PLACEHOLDER: Scheduled y Playlists. ESTÁTICA: About.
+  - Backend, nuevo en 21c: `Container.platform_registry` tiene los adapters reales de Twitch y Kick cuando `main()` los construye (AD-102). Ninguna página los consume todavía (21d).
+METODO: auditoría del repo recibido antes de escribir; baseline 1057/1057 confirmado. Cada corrección se probó primero con un test que falla. Comparado el `IntegrityToken.getHeaders()` y `getChannel` de TwitchLink 3.5.6 para no inventar formatos.
+CAMBIOS_21c:
+  - `bootstrap/platforms.py` (nuevo): `build_platform_adapters()`. Twitch: account, channel_directory, live_stream_provider, video_provider, clip_provider, playback_resolver. Kick (solo con credenciales): account, channel_directory, live_stream_provider.
+  - `bootstrap/dependencies.py`: `build_container(platform_adapters=None)` (aditivo, sin argumento = comportamiento 21a). `main.py`: Qt antes que los adapters.
+  - `IntegrityHeaderSource` (nuevo, `integrity_adapter.py`); `AppConfig.kick_client_id/kick_client_secret` (`SecretStr`).
+  - Fix `KickAccountService.current_account()`: refresca un token vencido en vez de borrar la sesión (confirmado en vivo).
+  - Fix `migrations/env.py`: `fileConfig` solo en la CLI de Alembic; la migración en proceso ya no apaga los loggers de la app.
+  - Fix `TwitchChannelDirectory._lookup`: manda solo `id` o solo `login` (el otro null), como `getChannel` de TwitchLink 3.5.6. Encontrado en la verificación en vivo (`find_channel` devolvía None); los tests con `MockTransport` no lo veían porque solo miraban que el login estuviera en el cuerpo.
+  - `scripts/verify_21c_live.py` (nuevo): verificación en vivo, no forma parte de pytest.
+VERIFICACION_EN_VIVO (máquina del usuario: Windows 11, Python 3.12.10, PySide6 6.11.2, 2026-09-28):
+  - PASS `kick-connect`: OAuth 2.1 + PKCE completo (navegador, listener local en :51823, intercambio de token contra id.kick.com, lectura del usuario); tokens guardados en el Credential Manager de Windows.
+  - PASS `kick-refresh`: con `expires_at` forzado a 0, `current_account()` renovó el token en vez de borrar la sesión.
+  - PASS `kick-channel`: búsqueda de un canal con su estado en vivo por la API real.
+  - PASS `twitch-channel` (tras el fix): canal, estado en vivo y seguidores por GQL real con el Client-ID web.
+  - PASS `twitch-integrity`: la página oculta de QtWebEngine capturó el token de Integrity y Twitch lo aceptó (30 videos listados). **Sin sesión de Twitch iniciada**: no dice nada sobre el caso con sesión. La consola de esa página imprime líneas `js:` (WebGPU, bluetooth): son mensajes del JavaScript de Twitch dentro de Chromium, inocuos, no errores del proyecto.
+  - NO PROBADOS: `twitch-account`, `twitch-playback` (requieren Firefox con sesión de Twitch), `kick-disconnect`, Kick sin sesión.
+LIMITACION_DE_ENTORNO: el sandbox de desarrollo no tiene red a twitch.tv/kick.com ni Secret Service ni Windows; por eso lo de arriba se verificó en la máquina del usuario.
+LAST_COMPLETED_PHASE: 21c (PASS con alcance declarado). Antes: fix post-21e de Home (PASS), 21e checkpoint (PASS), 21b (AD-100/101), 21a (AD-98) + RISK-PKG-02 (AD-99). FASE 20 sigue BLOCKED.
+SOURCE_BASELINE: HEAD 9e96ad5 + cambios sin commitear de 21a, RISK-PKG-02, 21b, fix de Home y 21c.
+PROJECT_VERSION: 0.1.0 (sin cambios)
+TEST_STATUS: pytest 1074/1074 passed (1057 heredados + 17 nuevos). `ruff check src/twick_hub tests`: 0 errores. `pyright`: 0/0/0. El script de verificación pasa ruff y pyright, pero no lo ejecuta pytest.
 KNOWN_BLOCKERS:
-  - El artefacto Windows x64 real que pide el Master Plan §56 sigue sin poder producirse en ningún entorno de IA (sin runner/máquina Windows; PyInstaller no cross-compila). Sin cambios desde FASE 19.
-  - Nuevo (formalizado en FASE 20, aunque ya documentado por partes desde FASE 6/9): no existe ninguna fase en el Master Plan (§59 termina en FASE 20) asignada a completar el wiring de Container/Application (RISK-ARCH-01/03/04/05) ni a conectar qml_bridge a los servicios reales (RISK-UI-01/02). Sin esto, "funcional baseline" (uno de los 6 componentes de "terminado", Master Plan §60) no puede alcanzar estado satisfactorio.
+  - Windows x64 real sigue sin poder producirse aquí — no es competencia de FASE 21.
 KNOWN_RISKS:
-  - Corregido en FASE 20 (no "cerrado" como decía FASE 19): RISK-BUILD-01 — ver HALLAZGO_DE_CONTINUIDAD_FASE_20. Mitigación real (`pyproject.toml` include) confirmada efectiva; el borrado físico del directorio sigue pendiente.
-  - Reabierto en efecto por recurrencia: RISK-BUILD-02 (commits atrasados respecto al disco) — el propio patrón que documentaba volvió a ocurrir en FASE 19.
-  - Escalado a severidad explícita por FASE 20 (ya existía, no es nuevo): RISK-SEC-02 (clave de firma del updater es de desarrollo) — CRITICAL condicional a cualquier release real, no a este punto del desarrollo.
-  - Sin cambio de estado, solo confirmados con evidencia de lectura directa en esta fase: RISK-ARCH-01/02/03/04/05, RISK-UI-01/02, RISK-PKG-02/03, RISK-LIVE-01/02/03/04/05, RISK-KICK-01/02/03, RISK-TWITCH-02/03/04, RISK-SEC-01, RISK-MIGRATION-01, RISK-PERF-01, RISK-PROD-01/02.
-  - Heredados sin revisión propia en esta fase (fuera del muestreo de FASE 20): RISK-DATA-02/03, RISK-SCHED-01..04, RISK-PLAYLIST-01, RISK-PERF-02..04, RISK-CONCURRENCY-01, RISK-RESUME-01, RISK-UX-01, RISK-TEST-01, RISK-LIVE-06, RISK-TWITCH-01.
-IMPORTANT_DECISIONS: Ninguna decisión de arquitectura nueva en FASE 20 (es una fase de auditoría, no de diseño — Master Plan §57 no le da mandato para decidir, solo para reportar).
-FILES_CHANGED:
-  - docs/final-architecture-review.md (nuevo — matriz completa de FASE 20, formato REQUISITO/ESTADO/EVIDENCIA/PROBLEMA/SEVERIDAD/RECOMENDACIÓN/RIESGO por los 22 requisitos que pide Master Plan §57)
-  - docs/risk-register.md (RISK-BUILD-01 corregido de "CERRADO" a estado real — ver arriba)
-  - docs/phase-state.md (este archivo)
-  - Ningún archivo de src/ ni tests/ tocado — FASE 20 es auditoría, no remediación (regla permanente #2)
-NEXT_PHASE: Ninguna definida en el Master Plan (§59 "Orden final" termina en FASE 20; §61 "Índice de handoffs" no lista una FASE 21). Quien retome el proyecto debe decidir el alcance de una fase de integración final no prevista por el plan original — ver docs/final-architecture-review.md §5 para la lista priorizada de lo que falta (build Windows real, clave de release, migración en primer arranque, wiring de Container/qml_bridge, commit de FASE 19+20).
-NEXT_PHASE_PREREQUISITES: Ver docs/final-architecture-review.md §5, en orden de bloqueo real: (1) compilar el .exe Windows x64 en un runner/máquina Windows real (el workflow ya existe: .github/workflows/build-windows.yml); (2) reemplazar PUBLIC_KEY_PEM por un par de release real antes de exponer el .exe a cualquier usuario no-desarrollador; (3) ejecutar `alembic upgrade head` en el primer arranque programático (RISK-PKG-02); (4) decidir el alcance de conectar Container/Application/qml_bridge a los servicios ya construidos (RISK-ARCH-01/03/04/05, RISK-UI-01/02) — el ítem de mayor volumen, sin fase asignada por el Master Plan; (5) commitear el estado acumulado de FASE 19+20 con mensajes que documenten qué cubre cada una.
-DATE_UTC: 2026-09-27
+  - RISK-TWITCH-05 (NUEVO): el único login de Twitch soportado es importar la sesión de Firefox; sin sesión no hay playback (descargas de Twitch). Decisión pendiente antes de 21d.
+  - RISK-ARCH-01: CERRADO en lo que 21c cubría (wiring); lo que queda de ese riesgo es `live_monitor` (21d).
+  - RISK-ARCH-09 (antes RISK-ARCH-06 duplicado): ampliado — el `httpx.AsyncClient` de `build_platform_adapters()` tampoco se cierra en el cierre de `Application`.
+  - Sin cambio: RISK-UI-03, RISK-UI-04, RISK-UI-05, RISK-PERF-05, RISK-PKG-03 (tamaño del bundle), RISK-PKG-04 (antes RISK-PKG-03 duplicado: sin `__main__.py`), RISK-TWITCH-04 (Integrity: ahora con una verificación en vivo a favor), demás heredados.
+IMPORTANT_DECISIONS:
+  - AD-102 (ver docs/architecture-decisions.md).
+  - RISK-UI-03 NO se hizo en 21c: requiere tocar `AddFavoriteUseCase` o `FavoritesModel`; pendiente de confirmación del usuario.
+  - Kick sin `TWICK_HUB_KICK_CLIENT_ID/SECRET` queda con adapters vacíos (no anuncia una cuenta que no puede conectar).
+FILES_CHANGED: ver los ZIP de entrega de 21c (FASE21c.zip, FASE21c_fix1.zip y el de cierre).
+NEXT_PHASE: 21d (Search/Live/Account + `live_monitor`). Requiere decidir antes: (1) RISK-UI-03; (2) cómo inicia sesión en Twitch un usuario sin Firefox (RISK-TWITCH-05); (3) RISK-ARCH-06 antes de permitir encolar desde la UI. Al auditar 21d, confirmar si el `live_monitor` de Twitch necesita credenciales de una app de `dev.twitch.tv`. 21f (Settings/Scheduled/Playlists, RISK-UI-05) sigue como decisión pendiente.
+NEXT_PHASE_PREREQUISITES:
+  (1) Decisión sobre RISK-UI-03. (2) Decisión sobre RISK-TWITCH-05. (3) RISK-ARCH-09.
+DATE_UTC: 2026-09-28
+
+---
+## FASE 22.0 — Higiene (en curso)
+- FASE 22 (`PLAN_FASE_22_HACIA_APP_FUNCIONAL.md`) REEMPLAZA a `FASE_21_INTEGRACION_FINAL.md` en lo pendiente: 21d, 21e-final y 21f pasan a las sub-fases 22.2–22.15.
+- IDs de riesgo duplicados corregidos: ciclo de vida del motor → RISK-ARCH-09 (RISK-ARCH-06 sigue siendo "Settings sin conectar"); falta de `__main__.py` → RISK-PKG-04 (RISK-PKG-03 sigue siendo el tamaño del bundle).
+- Pendiente del usuario: borrar `benchmarks/{src,docs,tests,FASE21b.diff}` (verificado: las copias reales son más nuevas), correr pytest y commitear.

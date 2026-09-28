@@ -160,3 +160,30 @@ def test_get_access_token_returns_the_stored_token_when_connected():
 def test_get_access_token_returns_none_when_never_connected():
     service = _service(lambda r: httpx.Response(200, json=_USER_RESPONSE))
     assert service.get_access_token() is None
+
+
+# FASE 21c — a stored token past its ``expires_at`` must be refreshed by
+# ``current_account`` (the call the app makes at startup), not sent as-is
+# and then deleted when Kick answers 401.
+
+
+async def test_current_account_refreshes_an_expired_token_instead_of_signing_out():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "id.kick.com":
+            return httpx.Response(
+                200, json={"access_token": "at2", "refresh_token": "rt2", "expires_in": 3600}
+            )
+        if request.headers["authorization"] == "Bearer at2":
+            return httpx.Response(200, json=_USER_RESPONSE)
+        return httpx.Response(401, text="expired")
+
+    service = _service(handler, connected=True)
+    service._token_store.save(
+        "user-tokens", StoredKickTokens(access_token="at1", refresh_token="rt1", expires_at=0.0)
+    )
+
+    account = await service.current_account()
+
+    assert account is not None
+    assert account.username == "someone"
+    assert service.get_access_token() == "at2"

@@ -48,6 +48,9 @@ class KickAccountService:
         if tokens is None:
             return None
         try:
+            # FASE 21c: a token past its expires_at is refreshed here, not
+            # sent as-is and then deleted when Kick answers 401.
+            await self.ensure_fresh_token()
             user_data = await self._api.get_current_user()
         except Exception:
             self._token_store.delete(TOKEN_STORE_KEY)

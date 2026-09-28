@@ -10,10 +10,19 @@ ScrollView {
 
     property bool refreshing: false
 
+    // RISK-UI-04 fix: Favorites/Downloads counters below are real (reuse the
+    // same favoritesModel/downloadsModel bridges FASE 21b already wired for
+    // their own pages — no new bridge, no network). "Live now" and "Recent
+    // activity" stay mock: they need Twitch/Kick adapters (21c) or a real
+    // notifications/history-derived feed, neither in scope here.
+    Component.onCompleted: {
+        favoritesModel.refresh();
+        downloadsModel.refresh();
+    }
+
     ColumnLayout {
         width: root.availableWidth
         spacing: Theme.spacingLg
-        // Mock content only — Master Plan §36: "No conectar plataformas reales."
 
         RowLayout {
             Layout.fillWidth: true
@@ -63,9 +72,10 @@ ScrollView {
 
             Repeater {
                 model: [
+                    // Still mock — needs 21c/21d (no live adapters yet).
                     { label: "Live now", value: "2" },
-                    { label: "Downloads in progress", value: "3" },
-                    { label: "Favorites", value: "12" }
+                    { label: "Downloads in progress", value: String(downloadsModel.count) },
+                    { label: "Favorites", value: String(favoritesModel.count) }
                 ]
                 delegate: SectionCard {
                     Layout.fillWidth: true

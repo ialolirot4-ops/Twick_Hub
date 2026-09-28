@@ -108,3 +108,40 @@ async def test_get_live_stream_when_live():
 
     assert stream is not None
     assert stream.viewer_count == 42
+
+
+# FASE 21c — found running scripts/verify_21c_live.py against the real
+# Twitch: ``find_channel("twitch")`` came back None. ``_lookup`` sent
+# ``{"id": "", "login": "twitch"}``; Twitch treats the empty string as an
+# id that was provided (and doesn't exist), while TwitchLink 3.5.6's
+# ``getChannel`` sends only the one variable it was given, leaving the
+# other JSON ``null``. A fake server that only checks ``"northernlion" in
+# body`` can't tell the two apart, so these look at the variables.
+
+
+def _capturing_directory() -> tuple[TwitchChannelDirectory, list[dict]]:
+    import json
+
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["variables"])
+        return httpx.Response(200, json={"data": {"user": _CHANNEL_USER}})
+
+    return _directory(handler), sent
+
+
+async def test_find_channel_by_login_sends_a_null_id_not_an_empty_one():
+    directory, sent = _capturing_directory()
+
+    await directory.find_channel("northernlion")
+
+    assert sent == [{"id": None, "login": "northernlion"}]
+
+
+async def test_get_channel_by_id_sends_a_null_login_not_an_empty_one():
+    directory, sent = _capturing_directory()
+
+    await directory.get_channel(PlatformRef(platform=Platform.TWITCH, external_id="123"))
+
+    assert sent == [{"id": "123", "login": None}]

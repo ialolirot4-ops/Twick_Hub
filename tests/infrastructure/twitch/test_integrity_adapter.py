@@ -17,7 +17,11 @@ import pytest
 from PySide6 import QtNetwork
 
 from twick_hub.infrastructure.twitch.errors import IntegrityUnavailableError
-from twick_hub.infrastructure.twitch.integrity_adapter import IntegrityAdapter, IntegrityToken
+from twick_hub.infrastructure.twitch.integrity_adapter import (
+    IntegrityAdapter,
+    IntegrityHeaderSource,
+    IntegrityToken,
+)
 
 
 def _adapter(qapp) -> IntegrityAdapter:
@@ -81,3 +85,42 @@ async def test_get_integrity_async_raises_when_capture_yields_nothing(qapp):
 
     with pytest.raises(IntegrityUnavailableError):
         await adapter.get_integrity_async()
+
+
+# FASE 21c — ``IntegrityHeaderSource`` is what ``TwitchGQLClient`` actually
+# calls in production. Same shape as TwitchLink 3.5.6's
+# ``IntegrityToken.getHeaders()``: captured headers + ``Client-Integrity``.
+
+
+class _FakeIntegrityAdapter:
+    def __init__(self, token: IntegrityToken | None) -> None:
+        self._token = token
+
+    async def get_integrity_async(self) -> IntegrityToken:
+        if self._token is None:
+            raise IntegrityUnavailableError("no token")
+        return self._token
+
+
+async def test_header_source_adds_client_integrity_to_the_captured_headers():
+    token = IntegrityToken(
+        headers={"Client-ID": "cid", "Authorization": "OAuth abc"},
+        value="integrity-value",
+        expires_at=9_999_999_999.0,
+    )
+    source = IntegrityHeaderSource(_FakeIntegrityAdapter(token))
+
+    headers = await source.get_headers()
+
+    assert headers == {
+        "Client-ID": "cid",
+        "Authorization": "OAuth abc",
+        "Client-Integrity": "integrity-value",
+    }
+    assert "Client-Integrity" not in token.headers  # the token itself is not mutated
+
+
+async def test_header_source_propagates_integrity_unavailable():
+    source = IntegrityHeaderSource(_FakeIntegrityAdapter(None))
+    with pytest.raises(IntegrityUnavailableError):
+        await source.get_headers()

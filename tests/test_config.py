@@ -55,3 +55,25 @@ def test_load_config_reads_settings_from_the_environment(monkeypatch):
 
     assert config.app_name == "Custom Name"
     assert config.log_level == "DEBUG"
+
+
+# FASE 21c — Kick app credentials come from the environment, and the
+# secret never shows up in ``repr``.
+
+
+def test_kick_credentials_default_to_unset(tmp_path):
+    config = AppConfig(data_dir=tmp_path)
+    assert config.kick_client_id is None
+    assert config.kick_client_secret is None
+
+
+def test_kick_credentials_are_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("TWICK_HUB_KICK_CLIENT_ID", "cid")
+    monkeypatch.setenv("TWICK_HUB_KICK_CLIENT_SECRET", "s3cret-value")
+
+    config = load_config()
+
+    assert config.kick_client_id == "cid"
+    assert config.kick_client_secret is not None
+    assert config.kick_client_secret.get_secret_value() == "s3cret-value"
+    assert "s3cret-value" not in repr(config)

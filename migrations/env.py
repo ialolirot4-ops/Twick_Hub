@@ -18,7 +18,11 @@ config = context.config
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-if config.config_file_name is not None:
+# Twick Hub, FASE 21c: only for the CLI. ``fileConfig`` disables every
+# logger that already exists and resets the root level to WARNING, which
+# silenced the app's own logging after the in-process migration at startup
+# (bootstrap/migrations.py sets ``attributes["connection"]``; the CLI never does).
+if config.config_file_name is not None and config.attributes.get("connection") is None:
     fileConfig(config.config_file_name)
 
 # Twick Hub: FASE 8 adds the real schema (see infrastructure/persistence/
@@ -63,7 +67,23 @@ def run_migrations_online() -> None:
     In this scenario we need to create an Engine
     and associate a connection with the context.
 
+    Twick Hub, FASE 21a (RISK-PKG-02): a caller running Alembic
+    programmatically (bootstrap/migrations.py, not the CLI) shares its
+    *own* already-open connection via ``config.attributes["connection"]``
+    — the standard Alembic idiom for this — rather than this module
+    opening a second connection from ``sqlalchemy.url`` above (which
+    would silently point at the wrong database for an in-memory SQLite
+    URL, and would ignore whatever ``AppConfig`` the caller actually
+    built). The CLI (``alembic upgrade head``) never sets that
+    attribute, so its behavior here is unchanged.
     """
+    connectable = config.attributes.get("connection", None)
+    if connectable is not None:
+        context.configure(connection=connectable, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

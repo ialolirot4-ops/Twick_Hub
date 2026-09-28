@@ -34,6 +34,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from PySide6 import QtCore, QtNetwork, QtWebEngineCore
 
@@ -228,3 +229,25 @@ class IntegrityAdapter(QtCore.QObject):
                 "docs/risk-register.md RISK-TWITCH-04)."
             )
         return result
+
+
+class _IntegrityTokenSource(Protocol):
+    async def get_integrity_async(self) -> IntegrityToken: ...
+
+
+class IntegrityHeaderSource:
+    """Adapts ``IntegrityAdapter`` to what ``TwitchGQLClient`` depends on
+    (``gql.client.IntegrityHeaderSource``: a coroutine ``get_headers``).
+
+    Same shape as TwitchLink 3.5.6's ``IntegrityToken.getHeaders()``: the
+    headers captured from Twitch's own page (plus the user's OAuth header
+    ``IntegrityAdapter`` already added) with the token itself as
+    ``Client-Integrity``.
+    """
+
+    def __init__(self, adapter: _IntegrityTokenSource) -> None:
+        self._adapter = adapter
+
+    async def get_headers(self) -> dict[str, str]:
+        token = await self._adapter.get_integrity_async()
+        return {**token.headers, "Client-Integrity": token.value}
