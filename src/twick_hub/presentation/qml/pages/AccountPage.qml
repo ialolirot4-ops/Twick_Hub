@@ -49,7 +49,7 @@ ColumnLayout {
                 AppButton {
                     text: modelData.connected ? "Disconnect" : "Connect"
                     primary: !modelData.connected
-                    onClicked: ToastController.info((modelData.connected ? "Disconnecting" : "Connecting") + " isn't wired up yet — that's FASE 4a/5.")
+                    onClicked: ToastController.info("Not available yet.")
                 }
             }
         }

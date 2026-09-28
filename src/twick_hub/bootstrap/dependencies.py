@@ -9,12 +9,12 @@ AD-03: TwitchLink 3.5.5's ``Core/App.py`` does the opposite, creating
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import httpx
 
 from twick_hub.application.platform_registry import PlatformAdapters, PlatformRegistry
-from twick_hub.bootstrap.container import Container
+from twick_hub.bootstrap.container import Closer, Container
 from twick_hub.config.settings import AppConfig, load_config
 from twick_hub.domain.enums import Platform
 from twick_hub.infrastructure.downloads.download_coordinator import DownloadCoordinator
@@ -52,12 +52,17 @@ def build_container(
     config: AppConfig | None = None,
     *,
     platform_adapters: Mapping[Platform, PlatformAdapters] | None = None,
+    extra_closers: Sequence[Closer] = (),
 ) -> Container:
     """``platform_adapters`` (FASE 21c) are the real Twitch/Kick adapters
     from ``bootstrap/platforms.py``; they need a live Qt app, so the caller
     (``main()``) builds them and passes them in. Left unset, both platforms
     are registered with empty adapters — the FASE 21a behaviour, which is
     what every Qt-free caller (most tests) wants.
+
+    ``extra_closers`` (FASE 22.1) are things the caller opened that must be
+    closed at shutdown — in practice the HTTP client it gave the platform
+    adapters. They run after the container's own (see ``Container.closers``).
     """
     resolved_config = config or load_config()
     configure_logging(resolved_config)
@@ -81,7 +86,10 @@ def build_container(
         }
     )
 
-    download_service = _build_download_service(resolved_config, downloads, platform_registry)
+    download_http_client = httpx.AsyncClient()
+    download_service = _build_download_service(
+        resolved_config, downloads, platform_registry, download_http_client
+    )
 
     return Container(
         config=resolved_config,
@@ -93,6 +101,8 @@ def build_container(
         notifications=notifications,
         scheduled_downloads=scheduled_downloads,
         platform_registry=platform_registry,
+        # Workers first — they are what uses the clients — then the clients.
+        closers=(download_service.stop, download_http_client.aclose, *extra_closers),
     )
 
 
@@ -100,6 +110,7 @@ def _build_download_service(
     config: AppConfig,
     downloads: SqlDownloadRepository,
     registry: PlatformRegistry,
+    http_client: httpx.AsyncClient,
 ) -> DownloadService:
     """Assembles the real FASE 7 pipeline (RISK-ARCH-03/04): a
     ``DownloadQueue`` + ``JobControlStore`` feed a ``DownloadCoordinator``
@@ -109,10 +120,11 @@ def _build_download_service(
     doesn't decide — because AD-36 deliberately left it open — is what
     this function commits to for a real run: ``_DOWNLOAD_WORKER_COUNT``
     workers, ``work_dir`` under ``AppConfig.data_dir``, one dedicated
-    ``httpx.AsyncClient`` for HLS/segment fetching (independent of
-    whatever client FASE 21c ends up giving the Twitch/Kick adapters —
-    those aren't wired yet), and ffmpeg resolved from ``PATH``
-    (``FFmpegProcessor``'s own default).
+    ``httpx.AsyncClient`` for HLS/segment fetching (independent of the
+    one ``build_platform_adapters()`` shares between Twitch and Kick;
+    ``build_container`` owns it and closes it at shutdown, FASE 22.1),
+    and ffmpeg resolved from ``PATH`` (``FFmpegProcessor``'s own
+    default).
 
     ``segment_manager.progress`` is passed straight through as the
     ``DownloadService`` it returns, rather than a second
@@ -126,7 +138,6 @@ def _build_download_service(
     ``DownloadFinished`` this sub-phase (see docs/architecture-decisions.md
     AD-31/AD-36 — wire it when a real consumer needs it, not before).
     """
-    http_client = httpx.AsyncClient()
     hls_reader = HlsPlaylistReader(http_client)
     progress = ProgressTracker()
     segment_manager = SegmentManager(

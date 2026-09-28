@@ -9,9 +9,10 @@ import asyncio
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QObject, QUrl
+from PySide6.QtCore import QCoreApplication, QMetaObject, QObject, QUrl
 from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
 from PySide6.QtQuick import QQuickItem
 
@@ -424,4 +425,40 @@ async def test_home_page_shows_real_favorites_and_downloads_counts(migrated: Con
     assert by_label["Favorites"] == "2"
     assert by_label["Downloads in progress"] == "1"
     assert by_label["Live now"] == "2"  # unchanged: still the FASE 2 mock value
+    del engine, bridges, component
+
+
+async def test_home_refresh_button_rereads_the_real_counters_and_claims_nothing(
+    migrated: Container, qapp
+):
+    """FASE 22.1: the button used to run a 900 ms timer and announce
+    "Everything is up to date" without checking anything. It now re-runs the
+    same two real queries the page runs on load, and says nothing it did not
+    verify."""
+    await migrated.favorites.save(Favorite(_ref(Platform.TWITCH, "111"), position=0))
+    warnings: list[str] = []
+    engine, bridges, page, component = await _load_page(migrated, "HomePage.qml", warnings)
+    toasts: list[tuple[str, str]] = []
+    toast_controller: Any = engine.singletonInstance("TwickHub", "ToastController")
+    toast_controller.toastRequested.connect(lambda message, kind: toasts.append((message, kind)))
+
+    def favorites_card() -> str:
+        for card in _of_type(page, "SectionCard")[:3]:
+            value, label = _texts_of(card)
+            if label == "Favorites":
+                return value
+        raise AssertionError("no Favorites stat card")
+
+    assert favorites_card() == "1"
+    await migrated.favorites.save(Favorite(_ref(Platform.KICK, "adin"), position=1))
+    refresh = next(b for b in _of_type(page, "AppButton") if b.property("text") == "Refresh")
+
+    QMetaObject.invokeMethod(refresh, "click")
+    for _ in range(25):  # longer than the old fake 900 ms timer would have needed
+        await asyncio.sleep(0.05)
+        QCoreApplication.processEvents()
+
+    assert favorites_card() == "2"
+    assert toasts == []
+    assert warnings == []
     del engine, bridges, component

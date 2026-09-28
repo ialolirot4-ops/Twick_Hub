@@ -17,6 +17,7 @@ docs/migration-map.md.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from sqlalchemy import Engine
@@ -32,6 +33,10 @@ from twick_hub.domain.protocols import (
     ScheduledDownloadRepository,
 )
 
+# One thing to shut down: an async callable with no arguments, e.g.
+# ``DownloadService.stop`` or ``httpx.AsyncClient.aclose``.
+Closer = Callable[[], Awaitable[None]]
+
 
 @dataclass(frozen=True, slots=True)
 class Container:
@@ -44,6 +49,14 @@ class Container:
     notifications: NotificationRepository
     scheduled_downloads: ScheduledDownloadRepository
     platform_registry: PlatformRegistry
+    # FASE 22.1 (RISK-ARCH-09, AD-103): what the container opened and must
+    # be closed at shutdown, in the order to run them — ``Application``
+    # awaits each one inside the app's event loop, before
+    # ``engine.dispose()``. The container lists what *it* built (the
+    # download workers, then the download engine's HTTP client); whoever
+    # builds something else and hands it in (``main()``'s shared platform
+    # HTTP client) appends it via ``build_container(extra_closers=...)``.
+    closers: tuple[Closer, ...] = ()
 
     # FASE 21a wires everything above that doesn't need a live Twitch/Kick
     # session — see docs/architecture-decisions.md's FASE 21a entry for

@@ -56,6 +56,7 @@ class Application:
         self.qt_app = qt_app
         self.qml_engine: QQmlApplicationEngine | None = None
         self.bridges: Bridges | None = None  # keeps the QML data models alive
+        self._tasks: TaskRunner | None = None  # the UI's in-flight tasks, cancelled at shutdown
 
     def run(self, *, on_started: Callable[[], None] | None = None) -> int:
         """Loads the QML shell and blocks until the app quits.
@@ -75,24 +76,52 @@ class Application:
         self.qml_engine = QQmlApplicationEngine()
         # FASE 21b: the data bridges must be on the root context *before*
         # the QML loads, or the pages' bindings would hit undefined names.
-        self.bridges = install_bridges(
-            self.qml_engine, self._container, TaskRunner(loop.create_task)
-        )
+        self._tasks = TaskRunner(loop.create_task)
+        self.bridges = install_bridges(self.qml_engine, self._container, self._tasks)
         self.qml_engine.load(QUrl.fromLocalFile(str(_QML_MAIN)))
         if not self.qml_engine.rootObjects():
             logger.error("QML failed to load from %s", _QML_MAIN)
+            # Same teardown as a normal exit: nothing has run yet, but the
+            # loop must still be closed and the container's resources released.
+            with loop:
+                self._close_resources(loop)
+            self._shutdown()
             return 1
 
-        logger.info("%s skeleton started.", self._container.config.app_name)
+        logger.info("%s started.", self._container.config.app_name)
         if on_started is not None:
             on_started()
 
         try:
             with loop:
-                loop.run_until_complete(close_event.wait())
+                try:
+                    loop.run_until_complete(close_event.wait())
+                finally:
+                    # Still inside the loop: workers and HTTP clients are
+                    # async resources and must be closed on the loop that
+                    # ran them, before it is closed (FASE 22.1, AD-103).
+                    self._close_resources(loop)
         finally:
             self._shutdown()
         return 0
+
+    def _close_resources(self, loop: asyncio.AbstractEventLoop) -> None:
+        try:
+            loop.run_until_complete(self._aclose_resources())
+        except Exception:  # noqa: BLE001 - shutdown must still reach engine.dispose()
+            logger.exception("Error while closing resources.")
+
+    async def _aclose_resources(self) -> None:
+        # The UI's tasks first (they use what the container closes next),
+        # then each of the container's closers in order. One failing closer
+        # is logged and never stops the next one.
+        if self._tasks is not None:
+            await self._tasks.cancel_all()
+        for close in self._container.closers:
+            try:
+                await close()
+            except Exception:  # noqa: BLE001 - see above
+                logger.exception("A resource failed to close; continuing shutdown.")
 
     def _shutdown(self) -> None:
         logger.info("Shutting down.")

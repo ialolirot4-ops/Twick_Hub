@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import sys
 from pathlib import Path
 
+import psutil
 import pytest
 
 from twick_hub.infrastructure.downloads.ffmpeg_processor import (
@@ -132,3 +135,31 @@ async def test_asyncio_process_runner_never_uses_a_shell_string():
     )
     assert result.returncode != 0
     assert not Path("/tmp/should-not-exist").exists()
+
+
+async def test_asyncio_process_runner_kills_the_process_when_cancelled(tmp_path: Path):
+    """FASE 22.1: closing the app cancels the download worker; if that lands
+    while ffmpeg is remuxing, the child must not outlive the app. Before the
+    fix only a *timeout* killed it, a cancellation left it running."""
+    pid_file = tmp_path / "child.pid"
+    code = (
+        "import os, pathlib, time; "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
+        "time.sleep(30)"
+    )
+    task = asyncio.create_task(
+        AsyncioProcessRunner().run([sys.executable, "-c", code], timeout_seconds=60.0)
+    )
+    for _ in range(250):  # wait until the child is really up
+        if pid_file.exists() and pid_file.read_text():
+            break
+        await asyncio.sleep(0.02)
+    pid = int(pid_file.read_text())
+    try:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not psutil.pid_exists(pid), "the child process survived the cancellation"
+    finally:
+        if psutil.pid_exists(pid):  # never leave a stray sleeper behind if the test fails
+            psutil.Process(pid).kill()

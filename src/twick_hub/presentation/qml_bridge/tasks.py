@@ -33,6 +33,15 @@ class TaskRunner:
         self._pending.add(task)
         task.add_done_callback(self._finished)
 
+    async def cancel_all(self) -> None:
+        """Cancels whatever the UI still has in flight and waits for it to
+        unwind. Called once, at shutdown, before anything those tasks use
+        (the database, the HTTP clients) is closed (FASE 22.1)."""
+        pending = list(self._pending)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
     def _finished(self, task: asyncio.Future[Any]) -> None:
         self._pending.discard(task)
         if task.cancelled():

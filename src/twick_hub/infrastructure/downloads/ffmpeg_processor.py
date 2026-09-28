@@ -7,6 +7,7 @@ cancellation, stderr capture, exit codes, cleanup. All preserved here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -44,8 +45,8 @@ class FFmpegTimeoutError(Exception):
 class AsyncioProcessRunner:
     """Real ``ProcessRunner`` — ``asyncio.create_subprocess_exec`` with the
     argv list passed straight through (never a shell string), a timeout
-    that kills the process on expiry, and stderr captured for
-    ``FFmpegError``."""
+    that kills the process on expiry (and so does a cancellation), and
+    stderr captured for ``FFmpegError``."""
 
     async def run(self, argv: list[str], *, timeout_seconds: float | None = None) -> ProcessResult:
         process = await asyncio.create_subprocess_exec(
@@ -57,6 +58,13 @@ class AsyncioProcessRunner:
             process.kill()
             await process.wait()
             raise FFmpegTimeoutError(argv, timeout_seconds) from None
+        except asyncio.CancelledError:
+            # FASE 22.1: shutdown (or a cancelled job) must not leave ffmpeg
+            # running on its own once nothing is waiting for it any more.
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            raise
         return ProcessResult(
             returncode=process.returncode or 0, stderr=stderr.decode("utf-8", errors="replace")
         )

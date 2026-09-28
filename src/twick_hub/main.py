@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 
+import httpx
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtNetwork import QNetworkAccessManager
 
@@ -26,8 +27,17 @@ def main() -> int:
     # QObject and needs a QNetworkAccessManager — then the real platform
     # adapters, then the (Qt-free) container that holds them.
     qt_app = QGuiApplication(sys.argv)
-    platform_adapters = build_platform_adapters(config, network_manager=QNetworkAccessManager())
-    container = build_container(config, platform_adapters=platform_adapters)
+    # FASE 22.1: main() opens this client, so main() hands it to the
+    # container to close at shutdown (Twitch and Kick share it).
+    platform_http_client = httpx.AsyncClient()
+    platform_adapters = build_platform_adapters(
+        config, network_manager=QNetworkAccessManager(), http_client=platform_http_client
+    )
+    container = build_container(
+        config,
+        platform_adapters=platform_adapters,
+        extra_closers=(platform_http_client.aclose,),
+    )
     ensure_schema_migrated(container.engine)  # RISK-PKG-02: create/upgrade the schema
     app = Application(container, qt_app)
     return app.run()

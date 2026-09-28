@@ -13,6 +13,6 @@ Item {
         title: "No scheduled downloads yet"
         description: "Set a channel to auto-download its next stream or VOD, and it'll show up here."
         actionLabel: "New scheduled download"
-        onActionRequested: ToastController.info("Scheduling isn't wired up yet — that's FASE 11.")
+        onActionRequested: ToastController.info("Not available yet.")
     }
 }

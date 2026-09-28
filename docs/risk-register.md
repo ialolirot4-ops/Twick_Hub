@@ -397,8 +397,8 @@ Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 ## RISK-ARCH-09 — El ciclo de vida del motor de descargas no participa en el cierre de `Application` (FASE 21b)
 **Severidad:** LOW hoy, MEDIUM en cuanto 21d permita encolar descargas desde la UI
 **Evidencia:** `Application._shutdown()` solo hace `engine.dispose()`. Nadie llama `DownloadService.stop()` ni `aclose()` del `httpx.AsyncClient` creado en `_build_download_service` (21a). El coordinador arranca de forma perezosa en el primer `enqueue`, y ninguna UI encola todavía, así que hoy no hay workers vivos al cerrar.
-**Mitigación:** en la sub-fase que conecte el primer `enqueue` desde la UI (21d), cerrar workers y cliente HTTP en el cierre, antes de `engine.dispose()`. La página Downloads tampoco ofrece pausar/reanudar (el mock nunca lo tuvo; `DownloadService.pause/resume` existen).
-**Estado:** ABIERTO.
+**Mitigación:** IMPLEMENTADA en 22.1 (AD-103): `Container.closers` + `Application` cierran workers y los dos clientes HTTP antes de `engine.dispose()`; una cancelación ahora también mata a ffmpeg. La página Downloads tampoco ofrece pausar/reanudar (el mock nunca lo tuvo; `DownloadService.pause/resume` existen): 22.4.
+**Estado:** CERRADO en 22.1. Lo que queda de "cerrar a mitad de descarga" (fila en `DOWNLOADING`, archivo parcial) se sigue en 22.6 y RISK-RESUME-02.
 
 
 ## RISK-UI-04 — `HomePage.qml` (página de inicio) sigue 100 % mock y contradice a las páginas reales (hallazgo FASE 21e)
@@ -412,14 +412,14 @@ Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 **Severidad:** MEDIUM
 **Evidencia:** `SettingsPage.qml` con `property var sections` literal ("Mock only"); `ScheduledPage.qml`/`PlaylistsPage.qml` son `EmptyState` fijos cuyo botón dice "that's FASE 11/12" (ambas fases ya cerradas). `application/settings.py`, `scheduled_downloads.py` y `playlists.py` existen; `Container` no expone `settings`/`playlists` (RISK-ARCH-04) y no hay bridge.
 **Impacto:** la app no permite ni configurar, ni programar, ni crear listas; el texto de los toasts es obsoleto. FASE 21 no las contempla en ninguna sub-fase.
-**Mitigación:** decidir si entran como 21f o quedan fuera de FASE 21; no requieren red.
-**Estado:** ABIERTO — decisión del usuario.
+**Mitigación:** las tres se conectan en FASE 22 (Settings 22.9, Scheduled 22.10, Playlists 22.15). En 22.1 solo se corrigió el texto obsoleto: ya no filtran el número de fase ni anuncian éxitos falsos ("Not available yet."), con un test que escanea el QML para que no vuelva.
+**Estado:** ABIERTO — la conexión real; el texto engañoso quedó CERRADO en 22.1.
 
 ## RISK-PKG-04 — No existe `twick_hub/__main__.py`: `python -m twick_hub` falla (hallazgo FASE 21e)
 **Severidad:** LOW
 **Evidencia:** FASE_21_INTEGRACION_FINAL.md §21e menciona `python -m twick_hub`. Solo funcionan `python -m twick_hub.main` y el script `twick-hub` (`pyproject.toml`). Se usó `python -m twick_hub.main` en la verificación.
-**Mitigación:** añadir un `__main__.py` de 3 líneas si se quiere esa invocación; no hecho en 21e (verificación, no construcción).
-**Estado:** ABIERTO, informativo.
+**Mitigación:** IMPLEMENTADA en 22.1: `twick_hub/__main__.py` con guardia `__name__`; verificado arrancando `python -m twick_hub` (log `Twick Hub started.`) y con un test de importación sin efectos.
+**Estado:** CERRADO en 22.1.
 
 ## RISK-TWITCH-05 — El único login de Twitch soportado es importar la sesión de Firefox; sin Firefox no hay sesión ni playback (hallazgo FASE 21c)
 **Severidad:** MEDIUM
@@ -427,4 +427,20 @@ Severidad: CRITICAL / HIGH / MEDIUM / LOW.
 **Impacto:** un usuario sin Firefox no puede conectar su cuenta de Twitch en Twick Hub y, con el código actual, no puede resolver playback (capturar streams, bajar VODs y clips de Twitch). Kick no se ve afectado (OAuth propio).
 **Mitigación (a decidir antes de 21d, no elegida todavía):** (a) instalar Firefox solo para iniciar sesión una vez — sin cambios de código, pero un requisito raro para un usuario; (b) un login dentro de la app con QtWebEngine (ya es dependencia y ya carga twitch.tv para Integrity), que capture la cookie de sesión — código nuevo con su propia verificación en vivo; (c) importar desde navegadores Chromium — descartable a priori: Chrome/Edge cifran las cookies con claves ligadas a la app en versiones recientes, y sería frágil. Hay que confirmar contra la documentación actual antes de apoyarse en (b) o (c).
 **Estado:** ABIERTO.
+
+
+## RISK-RESUME-02 — Cerrar la app a mitad del remux puede dejar un archivo parcial en el destino final (hallazgo FASE 22.1)
+**Severidad:** LOW
+**Evidencia:** `FFmpegProcessor.remux_concat` borra `output_path` solo cuando ffmpeg termina con código distinto de 0 (`ffmpeg_processor.py`, tras `await self.runner.run(...)`). Si el worker se cancela durante ese `await` (cierre de la app), la excepción sale antes y el archivo a medio escribir queda con el nombre final; la fila de la descarga sigue en `DOWNLOADING` (RISK-ARCH-09, AD-103).
+**Impacto:** una carpeta de destino con un vídeo truncado que parece terminado, hasta que la recuperación relance esa descarga (`ffmpeg -y` lo sobrescribe) o el usuario la cancele.
+**Mitigación:** decidir en 22.6 (recuperación de descargas interrumpidas) si se reanuda o se reinicia, y borrar el parcial en `CancelledError` dentro de `remux_concat` (3 líneas + test). No se hizo en 22.1 para no decidir aquí la semántica de reanudación.
+**Estado:** ABIERTO — resolver en 22.6.
+
+
+## RISK-ARCH-10 — Ctrl+C en la terminal no cierra la app (hallazgo FASE 22.1)
+**Severidad:** LOW (solo desarrollo)
+**Evidencia:** arrancando `python -m twick_hub` y enviando SIGINT, el proceso siguió vivo (había que matarlo): mientras Qt está dentro de `app.exec()`, Python no atiende la señal. Comportamiento anterior a 22.1; no es una regresión.
+**Impacto:** ninguno para el usuario final (cierra la ventana); molesto en desarrollo. Sin ventana no hay forma limpia de terminarla desde la terminal.
+**Mitigación:** si molesta, un `signal.signal(SIGINT, ...)` que llame a `qt_app.quit()` más un `QTimer` que ceda el control a Python cada ~200 ms. No planificado.
+**Estado:** ABIERTO, informativo.
 

@@ -8,8 +8,6 @@ ScrollView {
     id: root
     contentWidth: availableWidth
 
-    property bool refreshing: false
-
     // RISK-UI-04 fix: Favorites/Downloads counters below are real (reuse the
     // same favoritesModel/downloadsModel bridges FASE 21b already wired for
     // their own pages — no new bridge, no network). "Live now" and "Recent
@@ -37,29 +35,16 @@ ScrollView {
                 Layout.fillWidth: true
             }
 
+            // Re-runs the same two real queries the page runs on load. It
+            // says nothing about "up to date": the counters below are the
+            // only real data on this page, and they update themselves.
             AppButton {
-                text: root.refreshing ? "Refreshing…" : "Refresh"
-                enabled: !root.refreshing
+                text: "Refresh"
                 onClicked: {
-                    root.refreshing = true;
-                    refreshTimer.start();
+                    favoritesModel.refresh();
+                    downloadsModel.refresh();
                 }
             }
-        }
-
-        Timer {
-            id: refreshTimer
-            interval: 900
-            onTriggered: {
-                root.refreshing = false;
-                ToastController.success("Everything is up to date");
-            }
-        }
-
-        Loader {
-            Layout.leftMargin: Theme.spacingLg
-            active: root.refreshing
-            sourceComponent: LoadingIndicator { label: "Checking favorites…" }
         }
 
         GridLayout {

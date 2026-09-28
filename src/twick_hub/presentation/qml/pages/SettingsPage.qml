@@ -110,6 +110,6 @@ ScrollView {
         confirmLabel: "Reset"
         cancelLabel: "Keep my settings"
         destructive: true
-        onAccepted: ToastController.success("Settings reset to defaults")
+        onAccepted: ToastController.info("Not available yet — no settings were changed.")
     }
 }
